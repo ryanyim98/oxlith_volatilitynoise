@@ -1,0 +1,1006 @@
+---
+title: "oxlith_manuscript"
+author: "Ryan Yan"
+date: "2023-03-15"
+output: html_document
+---
+
+```{r include = FALSE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(ggcorrplot2)
+library(patchwork)
+library(ggpubr)
+library(lme4)
+library(lmerTest)
+library(sjPlot)
+library(emmeans)
+library(ggpmisc)
+library(PerformanceAnalytics)
+library(knitr)
+library(see)
+library(effects)
+library(brms)
+library(bayestestR)
+library(tidybayes)
+library(modelr)
+library(sjstats)
+library(ggeffects)
+library(mediation)
+library(rstatix)
+library(psych)
+library(MASS)
+# library(mlma)
+library(DiagrammeR)
+library(nlme)
+library(EMAtools)
+```
+
+```{r}
+theme_set(theme_classic()+
+          theme(text = element_text(family = "Times", size = 12)))
+orangeNavyPalette = c("orange","steelblue4")
+```
+
+```{r message=FALSE}
+df_hlm_movement <- read.csv("/Users/rh/Desktop/BayesM10/data/movement_data_HLM_-14toEnd_allparticipants_lowvmu.csv")
+names(df_hlm_movement)[6:13] <- paste0("movement_",names(df_hlm_movement)[6:13])
+df_hlm_time <- read.csv("/Users/rh/Desktop/BayesM10/data/time_data_HLM_-14toEnd_allparticipants_lowvmu.csv")
+names(df_hlm_time)[6:13] <- paste0("time_",names(df_hlm_time)[6:13])
+df_hlm_mood <- read.csv("/Users/rh/Desktop/BayesM10/data/mood_data_HLM_-14toEnd_allparticipants.csv")
+
+df_hlm <- Reduce(merge, list(df_hlm_movement,df_hlm_time,df_hlm_mood))
+
+df_demo <- read.csv("/Users/rh/Desktop/BayesM10/data/demo_info.csv")%>%
+  mutate(Allocation = if_else(Allocation == "B","Lithium", "Control"))
+  # filter(ID %in% unique(df_hlm$ID))
+
+participant_num <- length(unique(df_hlm$ID))
+
+df_hlm$Allocation[df_hlm$Allocation == "A"] <- "control"
+df_hlm$Allocation[df_hlm$Allocation == "B"] <- "lithium"
+
+# mood parameters from 0~4 to 1~5
+df_hlm$pos_mean <- df_hlm$pos_mean+5
+df_hlm$neg_mean <- df_hlm$neg_mean+5
+
+# mood parameters need log transformation
+df_hlm$posLog <- log(df_hlm$pos_mean+1)
+df_hlm$negLog <- log(df_hlm$neg_mean+1)
+
+#compute relative amplitude
+df_hlm <- df_hlm%>%
+  rowwise()%>%
+  mutate(rel_amplitude  = (movement_M10_mean - movement_L5_mean)/(movement_M10_mean + movement_L5_mean))
+
+#add season into df
+df_hlm <- merge(df_hlm,df_demo[,c("ID","Season","Diagnosis")], by = "ID")
+```
+
+# demo descriptive stats
+```{r}
+#reorganize ethnicity
+df_demo <- df_demo%>%
+  mutate(Ethnicity = if_else(Ethnicity == "", "not reported", if_else(Ethnicity == "other brazilian" | Ethnicity == "Other croatian british","other",Ethnicity)))
+
+df_control <- df_demo%>%filter(Allocation == "Control")
+df_lithium <- df_demo%>%filter(Allocation == "Lithium")
+
+table(df_demo[,c("Gender","Allocation")])
+chisq.test(table(df_demo[,c("Gender","Allocation")]))
+
+#ethnicity
+table(df_demo[,c("Ethnicity","Allocation")])
+chisq.test(table(df_demo[,c("Ethnicity","Allocation")]))
+
+#age
+df_demo%>%
+  group_by(Allocation)%>%
+  summarise(mean_Age = round(mean(Age),2),
+            sd_Age = round(sd(Age),2))
+t.test(df_control$Age,df_lithium$Age)
+
+#BMI
+df_demo%>%
+  group_by(Allocation)%>%
+  summarise(mean_BMI = round(mean(BMI),2),
+            sd_BMI = round(sd(BMI),2))
+t.test(df_control$BMI,df_lithium$BMI)
+
+#mood
+df_mood <- df_hlm%>%
+  filter(day >= -14 & day <= 28)%>%
+  group_by(ID,Allocation)%>%
+  summarise(pos_mean = round(mean(pos_mean,na.rm = TRUE),2),
+            neg_mean = round(mean(neg_mean,na.rm = TRUE),2))
+
+df_mood%>%
+  group_by(Allocation)%>%
+  summarise(mean_pos = round(mean(pos_mean),2),
+            sd_po = round(sd(pos_mean),2),
+            mean_neg = round(mean(neg_mean),2),
+            sd_neg = round(sd(neg_mean),2))
+t.test(df_mood$pos_mean[df_mood$Allocation == "lithium"],df_mood$pos_mean[df_mood$Allocation == "control"])
+t.test(df_mood$neg_mean[df_mood$Allocation == "lithium"],df_mood$neg_mean[df_mood$Allocation == "control"])
+
+#recording days
+df_demo%>%
+  group_by(Allocation)%>%
+  summarise(median_total.recording.days = median(total.recording.days, na.rm = TRUE))
+table(df_demo[,c("total.recording.days","Allocation")])
+t.test(df_lithium$total.recording.days,df_control$total.recording.days)
+
+#missing days
+df_demo%>%
+  group_by(Allocation)%>%
+  summarise(median_Missing.days = median(Missing.days, na.rm = TRUE))
+table(df_demo[,c("Missing.days","Allocation")])
+t.test(df_lithium$Missing.days,df_control$Missing.days)
+
+#BP subtype
+table(df_demo[,c("Diagnosis","Allocation")])
+chisq.test(table(df_demo[,c("Diagnosis","Allocation")]))
+
+#season
+table(df_demo[,c("Season","Allocation")])
+chisq.test(table(df_demo[,c("Season","Allocation")]))
+```
+
+## data availability
+
+```{r fig.width= 6, fig.height=5, out.width="100%"}
+group_N <- count(unique(df_hlm%>%
+  select(ID,Allocation)),Allocation)
+
+# data availability by week (rolling mean)
+ymax = max(group_N$n)+4
+p1 <- ggplot(df_hlm%>%
+  filter(!is.na(movement_M10_mean))%>%
+  group_by(Allocation)%>%
+  count(day),
+  aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax-4, color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax-4, color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Movement data availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "bottom",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+p2 <- ggplot(df_hlm%>%
+  filter(!is.na(pos_mean))%>%
+  group_by(Allocation)%>%
+  count(day),
+  aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax-4, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax-4, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Mood data availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+p3 <- ggplot( df_hlm%>%
+  filter(!is.na(movement_M10_vmu))%>%
+  group_by(Allocation)%>%
+  count(day),
+  aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax-4, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax-4, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Movement model output availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+p4 <- ggplot(df_hlm%>%
+  filter(!is.na(pos_vmu))%>%
+  group_by(Allocation)%>%
+  count(day), aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax -4, color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax -4, color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Mood model output availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+
+```
+
+```{r}
+group_N <- count(unique(df_hlm%>%
+  select(ID,Allocation)),Allocation)
+
+# data availability by week (rolling mean)
+ymax = max(group_N$n)+4
+p1a <- ggplot(df_hlm%>%
+  filter(!is.na(movement_M10_mean))%>%
+  group_by(Allocation)%>%
+  count(day),
+  aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax-6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax-6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Movement data availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "bottom",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+p1b <- ggplot(df_hlm%>%
+  filter(!is.na(pos_mean))%>%
+  group_by(Allocation)%>%
+  count(day),
+  aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax-6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax-6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Mood data availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+p1c <- ggplot( df_hlm%>%
+  filter(!is.na(movement_M10_vmu))%>%
+  group_by(Allocation)%>%
+  count(day),
+  aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax-6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax-6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Movement model output availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+p1d <- ggplot(df_hlm%>%
+  filter(!is.na(pos_vmu))%>%
+  group_by(Allocation)%>%
+  count(day), aes(x = day, y = n, color = Allocation))+
+  geom_line(size=1.5)+
+  geom_segment(x = -14, xend = -14, y = ymax, yend = ymax -6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  geom_segment(x = 28, xend = 28, y = ymax, yend = ymax -6, 
+               color = "#999999",size=0.7, arrow =arrow(length = unit(0.3, "cm")))+
+  labs(title = "Mood model output availability",
+       y = "available N")+
+  ylim(0,max(group_N$n)+1)+
+  scale_color_manual(values = orangeNavyPalette)+
+  scale_x_continuous(breaks = seq(-14,56,by = 7))+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+```
+
+```{r  fig.width= 8, fig.height=6, out.width="100%",fig.cap="Data availability; grey arrows represent the period of time considered by this study."}
+(p1a+p1b)/(p1c+p1d)+ 
+  plot_annotation(tag_levels = 'A')
+
+  # # ggsave("/Users/rh/Desktop/BayesM10/figs/fig1_data_availability.png",width = 8 ,height=6,dpi = 300)
+```
+
+```{r}
+df_hlm <- df_hlm%>%filter(day >= -14 & day <= 28)
+```
+
+## density plot of movement parameters
+```{r}
+p1d <- ggdensity(df_hlm$movement_M10_mean)+labs(title = "M10 mean",x="")+
+  scale_x_continuous(breaks = seq(25,200,by = 75))
+p2d <- ggdensity(df_hlm$movement_M10_s)+labs(title = "M10 noise",x="")
+p3d <- ggdensity(df_hlm$movement_M10_vmu)+labs(title = "M10 volatility",x="")
+p4d <- ggdensity(df_hlm$movement_M10_mu)+labs(title = "M10 mu",x="")
+p5d <- ggdensity(df_hlm$movement_L5_mean)+labs(title = "L5 mean",x="")
+p6d <- ggdensity(df_hlm$movement_L5_s)+labs(title = "L5 noise",x="")
+p7d <- ggdensity(df_hlm$movement_L5_vmu)+labs(title = "L5 volatility",x="")
+p8d <- ggdensity(df_hlm$movement_L5_mu)+labs(title = "L5 mu",x="")+
+  scale_x_continuous(breaks = seq(0.1,0.5,by = 0.1))
+
+(p1d|p2d|p3d|p4d)/(p5d|p6d|p7d|p8d)+
+  plot_annotation(title = "distribution of movement parameters")
+
+ # # ggsave("/Users/rh/Desktop/BayesM10/figs/fig_params_distribution_movement.png",width = 8 ,height=5,dpi = 300)
+```
+
+## density plot of movement onset time parameters
+```{r}
+p1d <- ggdensity(df_hlm$time_M10_mean, linetype = "dashed")+labs(title = "M10 time mean",x="")
+p2d <- ggdensity(df_hlm$time_M10_s, linetype = "dashed")+labs(title = "M10 time noise",x="")
+p3d <- ggdensity(df_hlm$time_M10_vmu, linetype = "dashed")+labs(title = "M10 time volatility",x="")
+p4d <- ggdensity(df_hlm$time_M10_mu, linetype = "dashed")+labs(title = "M10 time mu",x="")
+p5d <- ggdensity(df_hlm$time_L5_mean, linetype = "dashed")+labs(title = "L5 time mean",x="")
+p6d <- ggdensity(df_hlm$time_L5_s, linetype = "dashed")+labs(title = "L5 time noise",x="")
+p7d <- ggdensity(df_hlm$time_L5_vmu, linetype = "dashed")+labs(title = "L5 time volatility",x="")
+p8d <- ggdensity(df_hlm$time_L5_mu, linetype = "dashed")+labs(title = "L5 time mu",x="")+
+  scale_x_continuous(breaks = seq(0,1,by = 0.3))
+
+(p1d|p2d|p3d|p4d)/(p5d|p6d|p7d|p8d)+
+  plot_annotation(title = "distribution of onset time parameters")
+
+ # # ggsave("/Users/rh/Desktop/BayesM10/figs/fig_params_distribution_onsetTime.png",width = 8 ,height=5,dpi = 300)
+```
+## density plot of mood
+```{r}
+p1d <- ggdensity(df_hlm$posLog)+labs(title = "log PA")
+p2d <- ggdensity(df_hlm$negLog)+labs(title = "log NA")
+p3d <- ggdensity(df_hlm$pos_vmu)+labs(title = "PA vmu")
+p4d <- ggdensity(df_hlm$neg_vmu)+labs(title = "NA vmu")
+
+(p1d|p2d)/(p3d|p4d)
+```
+
+```{r}
+df_hlm$phase[df_hlm$day < 1] <- "pre"
+df_hlm$phase[df_hlm$day >= 1 & df_hlm$day <= 7] <- "post1"
+df_hlm$phase[df_hlm$day >= 8 & df_hlm$day <= 14] <- "post2"
+df_hlm$phase[df_hlm$day >= 15 & df_hlm$day <= 21] <- "post3"
+df_hlm$phase[df_hlm$day >= 22 & df_hlm$day <= 28] <- "post4"
+
+df_hlm$phase <- factor(df_hlm$phase, levels = c("pre","post1","post2","post3","post4")) #,"post5","post6"
+```
+
+# correlation among variables
+#correlation heatmap
+```{r}
+find.corr <- function(df,a,b){
+  #df is the dataframe
+  #a(IV) and b(DV) are the column index to which the model is fitted
+  iv <- names(df)[a]
+  dv <- names(df)[b]
+  my.formula = as.formula(paste0("scale(",iv,") ~ scale(",dv,") + (1 + scale(",dv,") |ID)"))
+  my.lme <- summary(lmer(my.formula,df))
+  return(c(my.lme$coefficients[2,1],my.lme$coefficients[2,5])) #beta, p
+}
+```
+
+
+```{r}
+df_hlm_corr2 <- df_hlm%>%
+  select(ID,day, Allocation,movement_M10_mean,
+         time_M10_mean,posLog,negLog,
+         movement_M10_vmu,
+         time_M10_vmu,
+         pos_vmu,neg_vmu,
+         movement_M10_s,
+         time_M10_s,
+         pos_s,neg_s)%>%
+  rename(M10 = movement_M10_mean,
+         timeM10 = time_M10_mean,
+         logPA = posLog,
+         logNA = negLog,
+         timeM10_vmu = time_M10_vmu,
+         M10_vmu = movement_M10_vmu,
+         PA_vmu = pos_vmu,
+         NA_vmu = neg_vmu,
+         M10_s = movement_M10_s,
+         timeM10_s = time_M10_s,
+         PA_s = pos_s,
+         NA_s = neg_s)
+
+num.row2 = ncol(df_hlm_corr2)-3
+
+my.corr.mat2 <- matrix(nrow = num.row2, ncol = num.row2)
+my.corr.pmat2 <- matrix(nrow = num.row2, ncol = num.row2)
+
+rownames(my.corr.mat2) <- names(df_hlm_corr2)[4:(num.row2+3)]
+colnames(my.corr.mat2) <- names(df_hlm_corr2)[4:(num.row2+3)]
+rownames(my.corr.pmat2) <- names(df_hlm_corr2)[4:(num.row2+3)]
+colnames(my.corr.pmat2) <- names(df_hlm_corr2)[4:(num.row2+3)]
+
+for (i in 1:num.row2){
+  my.corr.mat2[i,i] = 1
+  my.corr.pmat2[i,i] = 0
+}
+
+for (a in 4:(num.row2+3)){
+  for (b in 4:(num.row2+3)){
+    if (a != b){
+      temp_out <- find.corr(df_hlm_corr2,a,b)
+      my.corr.mat2[a-3,b-3] = temp_out[1]
+      my.corr.pmat2[a-3,b-3] = temp_out[2]
+    }
+  }
+}
+
+ggcorrplot::ggcorrplot(my.corr.mat2,p.mat = my.corr.pmat2,insig = "blank",colors=c("orange", "white", "navy"),lab = TRUE, digits = 1)+
+  theme(text = element_text(family = "Times", size = 12))
+
+round(my.corr.mat2,3)
+round(my.corr.pmat2,3)
+# # ggsave("/Users/rh/Desktop/BayesM10/figs/man_corr_plot.png",width = 6 ,height=6,dpi = 300)
+```
+
+## pre-randomisation check MANOVA
+```{r}
+# check M10
+df1 <- df_hlm%>%
+  dplyr::filter(phase == "pre")%>%
+  group_by(Allocation,ID)%>%
+  summarise_at(vars(movement_L5_mean:time_M10_mu), ~mean(.x, na.rm = TRUE))
+
+m01 <- manova(cbind(movement_M10_mean,movement_M10_vmu,time_M10_mean,time_M10_vmu) ~ Allocation, data =df1)
+summary.aov(m01)
+```
+
+None of the parameters of interest were different pre-randomization.
+
+
+#linear mixed model
+## mood
+### raw value
+```{r}
+model_formula_mean <- posLog ~ Allocation * phase + Age + Gender + (1|ID)
+
+df_hlm_lmer_mood_mean <- df_hlm%>%
+  select(ID,Allocation,phase,day,posLog,Age,Gender,Season)
+
+mod_mood_mean_pos <- lmer(model_formula_mean,data = df_hlm_lmer_mood_mean)
+kable(round(summary(mod_mood_mean_pos)$coefficients,3))
+
+lme.dscore(mod_mood_mean_pos,df_hlm_lmer_mood_mean,type = "lme4")%>%
+  as.data.frame()%>%
+  kable()
+```
+
+```{r}
+ee1 <- as.data.frame(Effect(c("phase", "Allocation"),mod_mood_mean_pos))
+
+stat.test <- as.data.frame(round(summary(mod_mood_mean_pos)$coefficients,3))[9:12,]%>%
+  rename(p_val = `Pr(>|t|)`)
+
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$Allocation == "control",]%>%
+  rename(group1 = phase))%>%
+  mutate(y.position = ee1$upper[1])%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+p8 <- ggplot(ee1, aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="mood level")+ 
+  stat_pvalue_manual(stat.test, label = "p_sig",vjust = -1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+p8
+# # ggsave("/Users/rh/Desktop/BayesM10/figs/hlm_mood_val.png",width = 4 ,height=3,dpi = 300)
+```
+
+
+### variability
+```{r include=TRUE}
+model_formula <- val ~ Allocation * var_type * phase + Age + Gender + (var_type|ID)
+
+df_hlm_lmer_mood_variability <- df_hlm%>%
+  select(ID,Allocation,day,phase,pos_vmu,pos_s,neg_s,Age,Gender,posLog)%>%
+  pivot_longer(c(pos_vmu,pos_s),names_pattern =  "(.*)_(.*)",names_to = c("mood_type","var_type"),values_to = "val")%>%
+  mutate(var_type = if_else(var_type == "vmu","volatility","noise"))
+
+df_hlm_lmer_mood_variability$var_type <- factor(df_hlm_lmer_mood_variability$var_type)
+
+df_hlm_lmer_mood_variability$var_type <- relevel(df_hlm_lmer_mood_variability$var_type, ref = "volatility")
+
+mod_pos_vmu <- lmer(model_formula,data = df_hlm_lmer_mood_variability)
+kable(round(summary(mod_pos_vmu)$coefficients,3))
+```
+
+
+```{r}
+ee2 <- as.data.frame(Effect(c("phase", "Allocation","var_type"),mod_pos_vmu))%>%
+  filter(var_type == "volatility")
+
+stat.test_pos_vmu <- as.data.frame(round(summary(mod_pos_vmu)$coefficients,3))[11:14,]
+
+stat.test <- stat.test_pos_vmu%>%rename(p_val = 'Pr(>|t|)')
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$Allocation == "lithium",]%>%
+  rename(group1 = phase), by = c("group1"))%>%
+  mutate(y.position = ee2$upper[1])%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+
+#plot volatility first
+p9 <- ggplot(ee2%>%filter(var_type == "volatility"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank())+
+  labs(title = "",y="mood volatility")+
+  scale_y_continuous(limits = c(-5.4,-3),breaks = seq(-5.4,-3, by = 0.4))+
+  stat_pvalue_manual(stat.test%>%filter(var_type == "volatility"),label = "p_sig",vjust = -1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+p9
+# # ggsave("/Users/rh/Desktop/BayesM10/figs/mood_variability.png",width = 4 ,height=3,dpi = 300)
+```
+## movement
+### relative amplitude
+```{r}
+model_formula_amp <- rel_amplitude ~ Allocation * phase + posLog + pos_vmu + Age + Gender + (1|ID)
+mod_relative_amplitude <- lmer(model_formula_amp,data = df_hlm)
+kable(round(summary(mod_relative_amplitude)$coefficients,3))
+
+plot_model(mod_relative_amplitude, type = "pred",terms = c("phase", "Allocation"))
+```
+
+### raw value
+```{r}
+model_formula_mean <- val ~ Allocation * movement_type * phase + posLog + pos_vmu  + Age + Gender + (movement_type|ID)
+
+df_hlm_lmer_movement_mean <- df_hlm%>%
+  select(ID,Allocation,phase,day,movement_L5_mean,movement_M10_mean,Age,Gender,posLog, negLog, pos_vmu,Season)%>%
+  pivot_longer(c(movement_L5_mean,movement_M10_mean),names_pattern =  "movement_(.*)_mean",names_to = c("movement_type"),values_to = "val")
+
+df_hlm_lmer_movement_mean$movement_type <- factor(df_hlm_lmer_movement_mean$movement_type)
+df_hlm_lmer_movement_mean$movement_type <- relevel(df_hlm_lmer_movement_mean$movement_type, ref = "M10")
+
+mod_movement_mean_M10 <- lmer(model_formula_mean,data = df_hlm_lmer_movement_mean)
+anova(mod_movement_mean_M10)
+kable(round(summary(mod_movement_mean_M10)$coefficients,3))
+                                                           
+df_hlm_lmer_movement_mean$movement_type <- factor(df_hlm_lmer_movement_mean$movement_type)
+df_hlm_lmer_movement_mean$movement_type <- relevel(df_hlm_lmer_movement_mean$movement_type, ref = "L5")
+
+mod_movement_mean_L5 <- lmer(model_formula_mean,data = df_hlm_lmer_movement_mean)
+kable(round(summary(mod_movement_mean_L5)$coefficients,3))
+
+plot_model(mod_movement_mean_M10, type = "pred", terms = c("phase", "Allocation","movement_type"))+
+  scale_color_manual(values=c("orange","navy"))+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.5),
+         panel.grid.minor.y = element_blank())+
+  labs(title = "predicted value of movement level",y="movement level")+
+  scale_y_continuous(breaks = seq(-10, 70, by = 10))
+
+df_hlm_lmer_movement_mean$Allocation <- factor(df_hlm_lmer_movement_mean$Allocation, levels = c("lithium","control"))
+kable(round(summary(lmer(model_formula_mean,data = df_hlm_lmer_movement_mean))$coefficients,3))
+
+df_hlm_lmer_movement_mean$Allocation <- relevel(df_hlm_lmer_movement_mean$Allocation, ref = "control")
+```
+
+
+```{r}
+# Plot Model using another method
+df_hlm_lmer_movement_mean$movement_type <- relevel(df_hlm_lmer_movement_mean$movement_type, ref = "M10")
+ee1 <- as.data.frame(Effect(c("phase", "Allocation","movement_type"),mod_movement_mean_M10))
+
+stat.test_M10 <- as.data.frame(round(summary(mod_movement_mean_M10)$coefficients,3))[13:16,]
+stat.test_L5 <- as.data.frame(round(summary(mod_movement_mean_L5)$coefficients,3))[13:16,]
+stat.test <- rbind(stat.test_L5,stat.test_M10)%>%rename(p_val = 'Pr(>|t|)')
+stat.test[1:4,"movement_type"] <- "L5" 
+stat.test[5:8,"movement_type"] <- "M10" 
+
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$Allocation == "control",]%>%
+  rename(group1 = phase))%>%
+  mutate(y.position = if_else(movement_type == "L5",ee1$upper[11],if_else(movement_type == "M10", ee1$upper[1],0)))%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+p4a <- ggplot(ee1, aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  facet_grid(~movement_type)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="movement level")+ 
+  scale_y_continuous(limits = c(-10,80),breaks = seq(-10, 80, by = 10))+
+  stat_pvalue_manual(stat.test, label = "p_sig",vjust = -2)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+p4a
+# # ggsave("/Users/rh/Desktop/BayesM10/figs/fig2_hlm_movement_val.png",width = 6 ,height=4,dpi = 300)
+
+p4a_M10 <- ggplot(ee1%>%filter(movement_type == "M10"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="daytime movement level", x ="")+ 
+  scale_y_continuous(limits = c(40,85),breaks = seq(40, 85, by = 10))+
+  stat_pvalue_manual(stat.test%>%filter(movement_type == "M10"), label = "p_sig",vjust = -4)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+p4a_M10
+```
+
+
+### variability
+```{r include=TRUE}
+model_formula <- val ~ Allocation * var_type * movement_type * phase + posLog + pos_vmu + Age + Gender + (var_type * movement_type| ID)
+
+df_hlm_lmer_movement_variability <- df_hlm%>%
+  select(ID,Allocation,day,phase,movement_L5_s,movement_L5_vmu, movement_M10_s,movement_M10_vmu,Age,Gender,posLog, negLog, pos_vmu)%>%
+  pivot_longer(c(movement_L5_s,movement_L5_vmu, movement_M10_s,movement_M10_vmu),names_pattern =  "movement_(.*)_(.*)",names_to = c("movement_type","var_type"),values_to = "val")%>%
+  mutate(var_type = if_else(var_type == "vmu","volatility","noise"))
+
+df_hlm_lmer_movement_variability$var_type <- factor(df_hlm_lmer_movement_variability$var_type)
+df_hlm_lmer_movement_variability$var_type <- relevel(df_hlm_lmer_movement_variability$var_type, ref = "noise")
+df_hlm_lmer_movement_variability$movement_type <- factor(df_hlm_lmer_movement_variability$movement_type)
+df_hlm_lmer_movement_variability$movement_type <- relevel(df_hlm_lmer_movement_variability$movement_type, ref = "M10")
+
+mod_movement_var_s_M10 <- lmer(model_formula,data = df_hlm_lmer_movement_variability)
+kable(round(summary(mod_movement_var_s_M10)$coefficients,3))
+
+df_hlm_lmer_movement_variability$var_type <- relevel(df_hlm_lmer_movement_variability$var_type, ref = "volatility")
+df_hlm_lmer_movement_variability$movement_type <- relevel(df_hlm_lmer_movement_variability$movement_type, ref = "M10")
+
+#same model, different reference level
+mod_movement_var_vmu_M10 <- lmer(model_formula,data = df_hlm_lmer_movement_variability)
+kable(round(summary(mod_movement_var_vmu_M10)$coefficients,3))
+
+df_hlm_lmer_movement_variability$Allocation <- factor(df_hlm_lmer_movement_variability$Allocation, levels = c("lithium","control"))
+kable(round(summary(lmer(model_formula,data = df_hlm_lmer_movement_variability))$coefficients,3))
+
+df_hlm_lmer_movement_variability$Allocation <- relevel(df_hlm_lmer_movement_variability$Allocation, ref = "control")
+
+#same model, different reference level
+df_hlm_lmer_movement_variability$var_type <- relevel(df_hlm_lmer_movement_variability$var_type, ref = "noise")
+df_hlm_lmer_movement_variability$movement_type <- relevel(df_hlm_lmer_movement_variability$movement_type, ref = "L5")
+
+mod_movement_var_s_L5 <- lmer(model_formula,data = df_hlm_lmer_movement_variability)
+kable(round(summary(mod_movement_var_s_L5)$coefficients,3))
+
+df_hlm_lmer_movement_variability$var_type <- relevel(df_hlm_lmer_movement_variability$var_type, ref = "volatility")
+df_hlm_lmer_movement_variability$movement_type <- relevel(df_hlm_lmer_movement_variability$movement_type, ref = "L5")
+
+mod_movement_var_vmu_L5 <- lmer(model_formula,data = df_hlm_lmer_movement_variability)
+kable(round(summary(mod_movement_var_vmu_L5)$coefficients,3))
+
+plot_model(mod_movement_var_s_M10, type = "pred", terms = c("phase", "Allocation","movement_type","var_type"))
+```
+
+*Conclusion: lithium increased volatility of M10 and L5 by week 4.*
+*Conclusion: Lithium increases daytime volatility and decreases nighttime volatility of time*
+
+
+```{r}
+df_hlm_lmer_movement_variability$var_type <- relevel(df_hlm_lmer_movement_variability$var_type, ref = "volatility")
+df_hlm_lmer_movement_variability$movement_type <- relevel(df_hlm_lmer_movement_variability$movement_type, ref = "M10")
+ee2 <- as.data.frame(Effect(c("phase", "Allocation","movement_type","var_type"),mod_movement_var_vmu_M10))
+
+stat.test_s_M10 <- as.data.frame(round(summary(mod_movement_var_s_M10)$coefficients,3))[16:19,]
+stat.test_s_L5 <- as.data.frame(round(summary(mod_movement_var_s_L5)$coefficients,3))[16:19,]
+stat.test_vmu_M10 <- as.data.frame(round(summary(mod_movement_var_vmu_M10)$coefficients,3))[16:19,]
+stat.test_vmu_L5 <- as.data.frame(round(summary(mod_movement_var_vmu_L5)$coefficients,3))[16:19,]
+
+stat.test <- Reduce(rbind,list(stat.test_s_M10,stat.test_s_L5,stat.test_vmu_M10,stat.test_vmu_L5))%>%rename(p_val = 'Pr(>|t|)')
+stat.test[c(1:4,9:12),"movement_type"] <- "M10" 
+stat.test[c(5:8,13:16),"movement_type"] <- "L5" 
+
+stat.test[1:8,"var_type"] <- "noise" 
+stat.test[9:16,"var_type"] <- "volatility" 
+
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$Allocation == "lithium",]%>%
+  rename(group1 = phase), by = c("movement_type","var_type","group1"))%>%
+  mutate(y.position = if_else(var_type == "volatility",ee2$upper[1],if_else(var_type == "noise", ee2$upper[21],0)))%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+#plot noise first
+p11a <- ggplot(ee2%>%filter(var_type == "noise"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  facet_wrap(~movement_type)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank())+
+  labs(title = "",y="movement noise")+
+  # scale_y_continuous(limits = c(-2,-1),breaks = seq(-2,-1, by = 0.2))+
+  stat_pvalue_manual(stat.test%>%filter(var_type == "noise"),label = "p_sig",vjust = -3)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+
+
+#plot volatility first
+p11b <- ggplot(ee2%>%filter(var_type == "volatility"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  facet_wrap(~movement_type)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank())+
+  labs(title = "",y="movement volatility")+
+  stat_pvalue_manual(stat.test%>%filter(var_type == "volatility"),label = "p_sig",vjust = 1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+
+p11a/p11b
+
+# ggsave("/Users/rh/Desktop/BayesM10/figs/fig2_hlm_movement_variability.png",width = 7 ,height=7,dpi = 300)
+
+p11b_M10 <- ggplot(ee2%>%filter(var_type == "volatility", movement_type == "M10"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="daytime movement volatility",x="")+
+  # scale_y_continuous(limits = c(-5.8,-3.8),breaks = seq(-5.8,-3.8, by = 0.4))+
+  stat_pvalue_manual(stat.test%>%filter(var_type == "volatility", movement_type == "M10"),label = "p_sig",vjust = 1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+```
+
+## time
+### raw value
+```{r}
+model_formula_mean <- val ~ Allocation * time_type * phase + posLog + pos_vmu + Age + Gender + (time_type|ID)
+
+df_hlm_lmer_time_mean <- df_hlm%>%
+  select(ID,Allocation,phase,day,time_L5_mean,time_M10_mean,Age,Gender,posLog,negLog, pos_vmu)%>%
+  pivot_longer(c(time_L5_mean,time_M10_mean),names_pattern =  "time_(.*)_mean",names_to = c("time_type"),values_to = "val")
+
+df_hlm_lmer_time_mean$time_type <- factor(df_hlm_lmer_time_mean$time_type)
+df_hlm_lmer_time_mean$time_type <- relevel(df_hlm_lmer_time_mean$time_type, ref = "M10")
+
+mod_time_mean_M10 <- lmer(model_formula_mean,data = df_hlm_lmer_time_mean)
+kable(round(summary(mod_time_mean_M10)$coefficients,3))
+
+df_hlm_lmer_time_mean$time_type <- factor(df_hlm_lmer_time_mean$time_type)
+df_hlm_lmer_time_mean$time_type <- relevel(df_hlm_lmer_time_mean$time_type, ref = "L5")
+
+mod_time_mean_L5 <- lmer(model_formula_mean,data = df_hlm_lmer_time_mean)
+kable(round(summary(mod_time_mean_L5)$coefficients,3))
+
+plot_model(mod_time_mean_M10, type = "pred", terms = c("phase", "Allocation","time_type"))+
+  scale_color_manual(values=c("orange","navy"))+
+  theme_bw()+
+  labs(title = "predicted value of onset time",y="onset time")
+```
+
+```{r}
+df_hlm_lmer_time_mean$time_type <- relevel(df_hlm_lmer_time_mean$time_type, ref = "M10")
+ee3 <- as.data.frame(Effect(c("phase", "Allocation","time_type"),mod_time_mean_M10))
+
+stat.test_M10 <- as.data.frame(round(summary(mod_time_mean_M10)$coefficients,3))[13:16,]
+stat.test_L5 <- as.data.frame(round(summary(mod_time_mean_L5)$coefficients,3))[13:16,]
+stat.test <- rbind(stat.test_L5,stat.test_M10)%>%rename(p_val = 'Pr(>|t|)')
+stat.test[1:4,"time_type"] <- "L5" 
+stat.test[5:8,"time_type"] <- "M10" 
+
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee3[ee3$phase != "pre" & ee3$Allocation == "control",]%>%
+  rename(group1 = phase))%>%
+  mutate(y.position = if_else(time_type == "L5",ee3$upper[11],if_else(time_type == "M10", ee3$upper[1],0)))%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+p4b <- ggplot(ee3, aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  facet_grid(~time_type)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="movement onset time (hrs)")+ 
+  scale_y_continuous(limits = c(10,30),breaks = seq(10,30, by = 2.5))+
+  stat_pvalue_manual(stat.test, label = "p_sig",vjust = -2)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+p4b
+# ggsave("/Users/rh/Desktop/BayesM10/figs/fig2_hlm_time_val.png",width = 6 ,height=4,dpi = 300)
+
+# p4a/p4b
+# # ggsave("/Users/rh/Desktop/BayesM10/figs/fig2_vals.png",width = 7 ,height=7,dpi = 300)
+
+p4b_M10 <- ggplot(ee3%>%filter(time_type == "M10"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="daytime movement onset time",x="")+ 
+  scale_y_continuous(limits = c(8,16),breaks = seq(8, 16, by = 2))+
+  stat_pvalue_manual(stat.test%>%filter(time_type == "M10"), label = "p_sig",vjust = -4)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+p4b_M10
+```
+
+### variability 
+```{r include=TRUE}
+model_formula <- val ~ Allocation * var_type * time_type * phase + posLog + pos_vmu + Age + Gender + (var_type * time_type|ID)
+
+df_hlm_lmer_time_variability <- df_hlm%>%
+  select(ID,Allocation,day,phase,time_L5_s,time_L5_vmu, time_M10_s,time_M10_vmu,Age,Gender,posLog, negLog, pos_vmu)%>%
+  pivot_longer(c(time_L5_s,time_L5_vmu, time_M10_s,time_M10_vmu),names_pattern =  "time_(.*)_(.*)",names_to = c("time_type","var_type"),values_to = "val")%>%
+  mutate(var_type = if_else(var_type == "vmu","volatility","noise"))
+
+df_hlm_lmer_time_variability$var_type <- factor(df_hlm_lmer_time_variability$var_type)
+df_hlm_lmer_time_variability$var_type <- relevel(df_hlm_lmer_time_variability$var_type, ref = "noise")
+df_hlm_lmer_time_variability$time_type <- factor(df_hlm_lmer_time_variability$time_type)
+df_hlm_lmer_time_variability$time_type <- relevel(df_hlm_lmer_time_variability$time_type, ref = "M10")
+
+mod_time_var_s_M10 <- lmer(model_formula,data = df_hlm_lmer_time_variability)
+kable(round(summary(mod_time_var_s_M10)$coefficients,3))
+
+df_hlm_lmer_time_variability$var_type <- relevel(df_hlm_lmer_time_variability$var_type, ref = "volatility")
+df_hlm_lmer_time_variability$time_type <- relevel(df_hlm_lmer_time_variability$time_type, ref = "M10")
+
+#same model, different reference level
+mod_time_var_vmu_M10 <- lmer(model_formula,data = df_hlm_lmer_time_variability)
+kable(round(summary(mod_time_var_vmu_M10)$coefficients,3))
+
+df_hlm_lmer_time_variability$Allocation <- factor(df_hlm_lmer_time_variability$Allocation, levels = c("lithium","control"))
+kable(round(summary(lmer(model_formula,data = df_hlm_lmer_time_variability))$coefficients,3))
+
+df_hlm_lmer_time_variability$Allocation <- relevel(df_hlm_lmer_time_variability$Allocation, ref = "control")
+
+# #same model, different reference level
+df_hlm_lmer_time_variability$var_type <- relevel(df_hlm_lmer_time_variability$var_type, ref = "noise")
+df_hlm_lmer_time_variability$time_type <- relevel(df_hlm_lmer_time_variability$time_type, ref = "L5")
+
+mod_time_var_s_L5 <- lmer(model_formula,data = df_hlm_lmer_time_variability)
+kable(round(summary(mod_time_var_s_L5)$coefficients,3))
+
+df_hlm_lmer_time_variability$var_type <- relevel(df_hlm_lmer_time_variability$var_type, ref = "volatility")
+
+df_hlm_lmer_time_variability$time_type <- relevel(df_hlm_lmer_time_variability$time_type, ref = "L5")
+mod_time_var_vmu_L5 <- lmer(model_formula,data = df_hlm_lmer_time_variability)
+kable(round(summary(mod_time_var_vmu_L5)$coefficients,3))
+
+plot_model(mod_time_var_s_M10, type = "pred", terms = c("phase", "Allocation","time_type","var_type"))+
+  labs(title="predicted value of onset time variability",y="noise")
+# ggsave("/Users/rh/Desktop/BayesM10/figs/fig2_hlm_time_variability_comparison.png",width = 7 ,height=7,dpi = 300)
+```
+
+```{r}
+df_hlm_lmer_time_variability$var_type <- relevel(df_hlm_lmer_time_variability$var_type, ref = "volatility")
+df_hlm_lmer_time_variability$time_type <- relevel(df_hlm_lmer_time_variability$time_type, ref = "M10")
+ee4 <- as.data.frame(Effect(c("phase", "Allocation","time_type","var_type"),mod_time_var_vmu_M10))
+
+stat.test_s_M10 <- as.data.frame(round(summary(mod_time_var_s_M10)$coefficients,3))[16:19,]
+stat.test_s_L5 <- as.data.frame(round(summary(mod_time_var_s_L5)$coefficients,3))[16:19,]
+stat.test_vmu_M10 <- as.data.frame(round(summary(mod_time_var_vmu_M10)$coefficients,3))[16:19,]
+stat.test_vmu_L5 <- as.data.frame(round(summary(mod_time_var_vmu_L5)$coefficients,3))[16:19,]
+
+stat.test <- Reduce(rbind,list(stat.test_s_M10,stat.test_s_L5,stat.test_vmu_M10,stat.test_vmu_L5))%>%rename(p_val = 'Pr(>|t|)')
+stat.test[c(1:4,9:12),"time_type"] <- "M10" 
+stat.test[c(5:8,13:16),"time_type"] <- "L5" 
+
+stat.test[1:8,"var_type"] <- "noise" 
+stat.test[9:16,"var_type"] <- "volatility" 
+
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee4[ee4$phase != "pre" & ee4$Allocation == "lithium",]%>%
+  rename(group1 = phase), by = c("time_type","var_type","group1"))%>%
+  mutate(y.position = if_else(var_type == "volatility" & time_type == "L5",ee4$upper[11],if_else(var_type == "volatility" & time_type == "M10", ee4$upper[1],if_else(var_type == "noise" & time_type == "L5",ee4$upper[36],if_else(var_type == "noise" & time_type == "M10",ee4$upper[21],0)))))%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+#plot noise first
+p12a <- ggplot(ee4%>%filter(var_type == "noise"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  facet_wrap(~time_type)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank())+
+  labs(title = "",y="movement noise")+
+  stat_pvalue_manual(stat.test%>%filter(var_type == "noise"),label = "p_sig",vjust = -1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+
+#plot volatility first
+p12b <- ggplot(ee4%>%filter(var_type == "volatility"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  facet_wrap(~time_type)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank())+
+  labs(title = "",y="movement volatility")+
+  stat_pvalue_manual(stat.test%>%filter(var_type == "volatility"),label = "p_sig",vjust = 1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+
+p12a/p12b
+# ggsave("/Users/rh/Desktop/BayesM10/figs/fig2_hlm_time_variability.png",width = 7 ,height=7,dpi = 300)
+
+p12b_M10 <- ggplot(ee4%>%filter(var_type == "volatility", time_type == "M10"), aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=c("orange","navy"))+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="daytime onset time volatility",x="")+
+  stat_pvalue_manual(stat.test%>%filter(var_type == "volatility", time_type == "M10"),label = "p_sig",vjust = 1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))
+```
+
+#manuscript graphs
+```{r manuscript figs}
+p4a_M10 + p11b_M10+
+  plot_annotation(tag_levels = c("A"))
+# ggsave("/Users/rh/Desktop/BayesM10/figs/man_fig1.png",width = 7 ,height=3,dpi = 300)
+
+p4b_M10 + p12b_M10+
+  plot_annotation(tag_levels = c("A"))
+# ggsave("/Users/rh/Desktop/BayesM10/figs/man_fig2.png",width = 7 ,height=3,dpi = 300)
+
+(p4a_M10 + p11b_M10) / (p4b_M10 + p12b_M10) +
+  plot_annotation(tag_levels = c("A"))
+# ggsave("/Users/rh/Desktop/BayesM10/figs/man_fig3.png",width = 7 ,height=6,dpi = 300)
+  
+(p8 + p9) / (p4a_M10 + p11b_M10) / (p4b_M10 + p12b_M10) +
+  plot_annotation(tag_levels = c("A"))
+# ggsave("/Users/rh/Desktop/BayesM10/figs/all_figs.png",width = 7 ,height=10,dpi = 300)
+```
+

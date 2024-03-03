@@ -1,0 +1,122 @@
+---
+title: "A5_timeseries_sim"
+author: "Ryan Yan"
+date: "2024-01-09"
+output: html_document
+---
+# Run A4 first!
+```{r}
+variability <- as.data.frame(Effect(c("phase", "Allocation","movement_type","var_type"),mod_movement_var_vmu_M10))
+
+df_hlm_lmer_movement_mu <- df_hlm%>%
+  select(ID,Allocation,day,phase,movement_L5_mu,movement_M10_mu,Age,Gender,posLog, negLog, pos_vmu)%>%
+  pivot_longer(c(movement_L5_mu,movement_M10_mu),names_pattern =  "movement_(.*)_(.*)",names_to = c("movement_type","var_type"),values_to = "val")
+
+df_hlm_lmer_movement_mu$movement_type <- factor(df_hlm_lmer_movement_mu$movement_type)
+df_hlm_lmer_movement_mu$movement_type <- relevel(df_hlm_lmer_movement_mu$movement_type, ref = "M10")
+
+mod_movement_var_mu_M10 <- lmer(val ~ Allocation * movement_type * phase + posLog + pos_vmu + Age + Gender + (movement_type| ID),data = df_hlm_lmer_movement_mu)
+mu <- as.data.frame(Effect(c("phase", "Allocation","movement_type"),mod_movement_var_mu_M10))
+
+group_params <- as.data.frame(variability %>% 
+                                       filter(phase == "post4",
+                                              movement_type == "M10") %>% 
+                                       select(phase:fit)) %>% 
+  rbind(mu %>% 
+          filter(phase == "post4",
+                 movement_type == "M10") %>% 
+          mutate(var_type = "mu") %>% 
+          relocate(var_type, .after = movement_type) %>% 
+          select(phase:fit)) %>% 
+  pivot_wider(names_from = var_type, values_from = fit)
+```
+
+#simulate 100 days' trajectory
+```{r}
+t_series = 1:100
+values_control = c()
+for (t in t_series){
+  if (t == 1){
+    mu = group_params$mu[1]
+  } else {
+    mu = rnorm(n = 1, mean = mu, sd = exp(group_params$volatility[1]))
+  }
+  values_control[t] = rnorm(n = 1, mean = mu, sd = exp(group_params$noise[1]))
+}
+
+values_lithium = c()
+for (t in t_series){
+  if (t == 1){
+    mu = group_params$mu[2]
+  } else {
+    mu = rnorm(n = 1, mean = mu, sd = exp(group_params$volatility[2]))
+  }
+  values_lithium[t] = rnorm(n = 1, mean = mu, sd = exp(group_params$noise[2]))
+}
+
+ggplot()+
+  geom_line(aes(x = t_series, y = values_control), color = orangeNavyPalette[1])+
+  geom_line(aes(x = t_series, y = values_lithium), color = orangeNavyPalette[2])
+
+mean(values_control)
+mean(values_lithium)
+```
+```{r}
+# set.seed(43)
+set.seed(23)
+t_series = 1:50
+values_control = c()
+for (t in t_series){
+  if (t == 1){
+    mu = 0.5
+  } else {
+    mu = rnorm(n = 1, mean = mu, sd = 0.01)
+  }
+  values_control[t] = rnorm(n = 1, mean = mu, sd = 0.2)
+}
+
+values_lithium = c()
+for (t in t_series){
+  if (t == 1){
+    mu = 0.5
+  } else {
+    mu = rnorm(n = 1, mean = mu, sd = 0.2)
+  }
+  values_lithium[t] = rnorm(n = 1, mean = mu, sd = 0.2)
+}
+
+mycolors <-  c("low vmu" = orangeNavyPalette[1],"high vmu" = orangeNavyPalette[2]) 
+
+ggplot()+
+  geom_line(aes(x = t_series, y = values_control, color = "low vmu"))+
+  geom_line(aes(x = t_series, y = values_lithium, color = "high vmu")) +
+  labs(color = "Time series", x = "trial", y = "Observed value")+
+  scale_color_manual(values = mycolors)
+  
+mean(values_control)
+mean(values_lithium)
+```
+#time series of actual subjects
+```{r}
+df_hlm_movement %>% 
+  filter(day > 0) %>% 
+  group_by(ID, Allocation) %>% 
+  summarise(movement_M10_vmu = mean(movement_M10_vmu, na.rm = T)) %>% 
+  arrange(movement_M10_vmu)
+
+df_hlm_movement_example = df_hlm_movement %>% 
+  filter(ID %in% c("OL0039","OL0191"),
+         day > 0) %>% 
+  select(Allocation,day,movement_M10_mean) %>% 
+  rename(values = movement_M10_mean)
+
+ggplot(df_hlm_movement_example, aes(x = day))+
+  geom_line(aes(y = values, group = Allocation,
+                color = Allocation))+
+  labs(color = "example participant",
+       y = "M10 value")+
+  scale_color_manual(values = orangeNavyPalette,
+                     labels = c("control", "lithium"))+
+  xlim(0,42)
+```
+
