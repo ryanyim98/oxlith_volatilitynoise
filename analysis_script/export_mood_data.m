@@ -1,6 +1,6 @@
 clear; clc;
-addpath('/Users/rh/Desktop/BayesM10/');
-data_path = '/Users/rh/Desktop/BayesM10/data/';
+addpath('~/Desktop/BayesM10/');
+data_path = '~/Desktop/BayesM10/data/';
 
 file_name = 'movement_data.csv';
 movement_data = readtable([data_path file_name]);
