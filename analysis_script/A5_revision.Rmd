@@ -1,0 +1,798 @@
+---
+title: "A5_revision"
+output: html_document
+date: "2024-10-28"
+---
+
+# run A4 first to set up the env
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(chron)
+```
+
+```{r GGIR}
+library(GGIR)
+# GGIR(datadir="~/Desktop/BayesM10/Ni thesis/test",
+#  outputdir="~/Desktop/BayesM10/Ni thesis/test_out",
+#  dataFormat = "actiwatch_csv",
+#  extEpochData_timeformat = "%Y/%m/%d %H:%M:%S:%f",
+#    windowsizes = c(5, 900, 3600),
+#    threshold.in = round(100 * (5/60), digits = 2),
+#    threshold.mod = round(2500 * (5/60), digits = 2),
+#    threshold.vig = round(10000 * (5/60), digits = 2),
+#    do.neishabouricounts = TRUE,
+#    acc.metric = "NeishabouriCount_x")
+
+# read.myacc.csv("~/Desktop/BayesM10/Ni thesis/test/OL0002_1.csv",
+#                rmc.skip = 100,
+#                rmc.nrow = Inf,
+#                rmc.firstrow.acc = 101,
+#                rmc.col.acc = 2:4,
+#                rmc.col.temp = 7,
+#                rmc.col.time=1,
+#                rmc.unit.acc = "g",
+#                rmc.unit.temp = "C",
+#                rmc.unit.time = "POSIX",
+#                rmc.format.time = "%Y-%m-%d %H:%M:%S:%f",
+#                rmc.desiredtz = "Europe/London",
+#                rmc.sf = 100)
+
+tmpdf<-read.csv("~/Desktop/BayesM10/Ni thesis/test/OL0002_1.csv",skip=100,
+                header = F)
+
+names(tmpdf)[1] <- "time"
+names(tmpdf)[2:4] <- c("acc.x","acc.y","acc.z")
+names(tmpdf)[5] <- "Lux"
+names(tmpdf)[7] <- "temperature"
+names(tmpdf)[8] <- "SVMgs"
+
+tmpdf$Date <- as.Date(tmpdf$time, format = "%Y-%m-%d")
+
+tmpdf %>% filter(Date == "2015-09-08")
+```
+
+```{r}
+subjects<-unique(df_hlm$ID)
+subjects
+```
+
+
+```{r}
+date_info <- read.csv("../../data/movement_data.csv") %>% 
+  mutate(Datemdy = as.Date(Date, format = "%m/%d/%y"))
+  
+df_isiv_day <- readxl::read_xlsx("~/Desktop/BayesM10/Ni\ thesis/summary_data/IS_IV/OL0209_OL0416_daysummary_weekly.xlsx") %>% 
+  rbind(readxl::read_xlsx("~/Desktop/BayesM10/Ni\ thesis/summary_data/IS_IV/OL0002_OL0209_daysummary_weekly.xlsx"))
+
+unique(toupper(substr(df_isiv_day$id,1,6)))
+
+df_isiv_actigraph <- read.csv("~/Desktop/BayesM10/Ni\ thesis/summary_data/IS_IV/OL0002-OL0209_ISIV_summary.csv") %>% 
+  rbind(read.csv("~/Desktop/BayesM10/Ni\ thesis/summary_data/IS_IV/OL0209-OL0416_ISIV_summary.csv")) %>% 
+  mutate(ID = ifelse(grepl("ol08719jun",ID),"ol008719jun",ID))
+
+df_isiv_actigraph$actigraphID <- df_isiv_actigraph$ID
+df_isiv_actigraph$ID <- toupper(substr(df_isiv_actigraph$ID,1,6))
+
+df_isiv_actigraph <- df_isiv_actigraph %>% 
+  group_by(ID) %>% 
+  mutate(actigraphNO = row_number()) %>% 
+  ungroup() %>% 
+  rowwise() %>% 
+  mutate(start_time_ymd = as.Date(strsplit(start_time,"T")[[1]][1]))%>% 
+  relocate(actigraphNO,actigraphID,start_time_ymd) %>% 
+  left_join(date_info %>% 
+              rename(start_time_ymd = Datemdy), by = c("ID","start_time_ymd")) %>% 
+  relocate(start_time_ymd,Day,.after = ID)
+
+unique(df_isiv_actigraph$ID)
+
+df_isiv_actigraph<-df_isiv_actigraph %>% 
+  group_by(ID) %>% 
+  mutate(day_diff = as.numeric(lead(start_time_ymd,1) - start_time_ymd)) %>% 
+  mutate(startday = ifelse(is.na(Day),lead(Day,1)-day_diff,Day)) %>% 
+  relocate(startday)
+
+df_isiv_actigraph <- left_join(df_isiv_actigraph %>% select(-Allocation),
+                               df_demo %>% select(ID,Allocation),
+                               by = "ID") %>% 
+  relocate(Allocation)
+df_isiv_actigraph$Allocation
+
+
+df_isiv_actigraph_ttest1 <- df_isiv_actigraph %>% 
+  group_by(ID,Allocation) %>% 
+  summarise(IS_interdailystability = mean(IS_interdailystability),
+            IV_intradailyvariability = mean(IV_intradailyvariability))
+
+summary(l1<-lm(IS_interdailystability~Allocation,df_isiv_actigraph_ttest1))
+plot_model(l1, type = "pred", terms = "Allocation")
+
+summary(lm(IV_intradailyvariability~Allocation,df_isiv_actigraph_ttest1))
+
+df_isiv_actigraph_ttest2 <- df_isiv_actigraph %>% filter(startday > 0) %>% 
+  group_by(ID,Allocation) %>% 
+  summarise(IS_interdailystability = mean(IS_interdailystability),
+            IV_intradailyvariability = mean(IV_intradailyvariability))
+
+unique(df_isiv_actigraph_ttest$ID)
+
+summary(lm(IS_interdailystability~Allocation,df_isiv_actigraph_ttest2))
+summary(lm(IV_intradailyvariability~Allocation,df_isiv_actigraph_ttest2))
+```
+
+# combine raw data 
+```{r}
+file_dir <- '/Users/yanyan/Desktop/BayesM10/Ni\ thesis/raw_data/raw\ data\ per\ min/'
+temp.df.master = NULL
+
+for (s in subjects){
+  numid = strsplit(s,"L")[[1]][2]
+  files <- list.files(file_dir,pattern = numid)
+  if (length(files) != 0){
+      temp.df.all <- NULL
+     for (i in 1:length(files)){
+        temp.df <- read.csv(paste0(file_dir,files[i])) %>% select(Date,Time,Lux,Temp,SVMgs) %>% 
+        mutate(Datemdy = ifelse(grepl("-",Date), as.Date(Date, format = "%Y-%m-%d"),
+                                as.Date(Date, format = "%d/%m/%Y"))) %>% 
+        mutate(Datemdy = as.Date(Datemdy))
+        temp.df.all <- rbind(temp.df.all,temp.df)
+     }
+
+    temp.df.all <- merge(temp.df.all %>%
+                           select(-Date),
+                         date_info %>%
+                           filter(ID == s))
+
+    write.csv(temp.df.all,paste0('../../data/raw_per_minute_data/',s,'.csv'))
+  } else {
+    print(paste0("no subject", s))
+  }
+  
+  temp.df.master <- rbind(temp.df.master,temp.df.all)
+}
+
+write.csv(temp.df.master,paste0('../../data/raw_per_minute_data/per_min_data_master.csv'))
+```
+
+# check one subject's data to show that calculated SVG actually makes sense
+```{r}
+unique(temp.df.all$Day)
+temp.df.all$Time_hhmmss <- times(paste0(temp.df.all$Time, ":00"))
+temp.df.all$Time_hh <- hours(temp.df.all$Time_hhmmss)
+
+act<-temp.df.all %>%
+  mutate(rollmean10h = zoo::rollmean(SVMgs, k = 10*60, na.pad = T, align = "right"),
+         rollmean5h = zoo::rollmean(SVMgs, k = 5*60, na.pad = T, align = "right")) %>% 
+  group_by(Day) %>%
+  summarise(M10_calc = max(rollmean10h, na.rm = T),
+            L5_calc = min(rollmean5h, na.rm = T))
+
+act_compare <- date_info %>% 
+  filter(ID == s)
+
+ggplot(temp.df.all %>% filter(Day == -7), aes(x = Time_hhmmss, y = SVMgs, color = Time_hh))+
+  geom_line()+
+  scale_x_continuous(breaks = seq(0,1,0.25), labels = seq(0,1,0.25)*24)+
+ggplot(temp.df.all %>% filter(Day == -6), aes(x = Time_hhmmss, y = SVMgs, color = Time_hh))+
+  geom_line()+
+  scale_x_continuous(breaks = seq(0,1,0.25), labels = seq(0,1,0.25)*24)+
+plot_layout(nrow = 2)
+
+df_compare <- merge(act %>% select(Day,M10_calc,L5_calc),
+                    act_compare %>% select(Day,M10,L5))
+
+ggplot(df_compare, aes(x = M10_calc, y = M10))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+ggplot(df_compare, aes(x = L5_calc, y = L5))+
+  geom_point()+
+   geom_smooth(method = "lm")
+
+temp.df.all %>%
+  group_by(Day) %>%
+  summarise(mean_enmo = mean(SVMgs, na.rm = T))
+
+a<-c(24.17651435,
+27.81781778,
+22.79077242,
+27.85237056,
+29.44504234,
+22.43111781,
+51.3727829,
+24.55924973,
+9.794146954,
+13.43260425,
+25.7152424,
+24.39114854,
+13.37010474,
+19.10628107,
+30.24616453,
+25.49364529,
+14.65088236) #copied from OL0209_OL0416_daysummary_weekly.xlsx
+
+b<-temp.df.all %>%
+  group_by(Day,Date) %>%
+  summarise(mean_enmo = mean(SVMgs, na.rm = T)) %>% 
+  ungroup() %>% 
+  slice(1:17)
+
+c=cbind(a,b)
+
+ggplot(c, aes(x = a, y = mean_enmo))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  xlim(0,150)+
+  ylim(0,150)+
+  geom_segment(x = 0, y = 0, xend = 150, yend = 150, linetype = "dashed")
+
+summary(lm(mean_enmo~a,c))
+lm.beta::lm.beta(lm(mean_enmo~a,c))
+
+# seems to be highly correlated. I will use this then.
+```
+## the conclusion is, yes, we could use the calculated mean as a proxy for the actual mean SVG
+
+## calculate M10, M9 etc. and plot their estimation & correlation
+```{r}
+find.corr <- function(df,a,b){
+  #df is the dataframe
+  #a(IV) and b(DV) are the column index to which the model is fitted
+  iv <- names(df)[a]
+  dv <- names(df)[b]
+  my.formula = as.formula(paste0("scale(",iv,") ~ scale(",dv,") + (1|ID)"))
+  my.lme <- summary(lmer(my.formula,df))
+  return(c(my.lme$coefficients[2,1],my.lme$coefficients[2,5])) #beta, p
+}
+```
+
+```{r}
+activity<-temp.df.master %>%
+  group_by(ID) %>% 
+  mutate(m10 = zoo::rollmean(SVMgs, k = 10*60, na.pad = T, align = "right"),
+         m9 = zoo::rollmean(SVMgs, k = 9*60, na.pad = T, align = "right"),
+         m8 = zoo::rollmean(SVMgs, k = 8*60, na.pad = T, align = "right"),
+         m7 = zoo::rollmean(SVMgs, k = 7*60, na.pad = T, align = "right"),
+         m6 = zoo::rollmean(SVMgs, k = 6*60, na.pad = T, align = "right"),
+         m5 = zoo::rollmean(SVMgs, k = 5*60, na.pad = T, align = "right"),
+         m4 = zoo::rollmean(SVMgs, k = 4*60, na.pad = T, align = "right"),
+         m3 = zoo::rollmean(SVMgs, k = 3*60, na.pad = T, align = "right"),
+         m2 = zoo::rollmean(SVMgs, k = 2*60, na.pad = T, align = "right"),
+         m1 = zoo::rollmean(SVMgs, k = 1*60, na.pad = T, align = "right")) %>% 
+  group_by(ID,Day) %>%
+  summarise_at(vars(M10,m10:m1),~max(.x,na.rm = T)) %>% 
+  filter(m10 != -Inf,M10 != -Inf)
+
+num.row2 = ncol(activity)-3
+
+my.corr.mat2 <- matrix(nrow = num.row2, ncol = num.row2)
+my.corr.pmat2 <- matrix(nrow = num.row2, ncol = num.row2)
+
+rownames(my.corr.mat2) <- names(activity)[4:(num.row2+3)]
+colnames(my.corr.mat2) <- names(activity)[4:(num.row2+3)]
+rownames(my.corr.pmat2) <- names(activity)[4:(num.row2+3)]
+colnames(my.corr.pmat2) <- names(activity)[4:(num.row2+3)]
+
+for (i in 1:num.row2){
+  my.corr.mat2[i,i] = 1
+  my.corr.pmat2[i,i] = 0
+}
+
+for (a in 4:(num.row2+3)){
+  for (b in 4:(num.row2+3)){
+    if (a != b){
+      temp_out <- find.corr(activity,a,b)
+      my.corr.mat2[a-3,b-3] = temp_out[1]
+      my.corr.pmat2[a-3,b-3] = temp_out[2]
+    }
+  }
+}
+
+ggcorrplot::ggcorrplot(
+  my.corr.mat2,
+  type = "lower",
+  outline.color = "white",
+           lab = TRUE)+
+  scale_fill_gradientn(limits = c(0.8, 1),
+                       colors = c("orange", "white", "steelblue4"),
+                       values = scales::rescale(c(0.8, 1.0, 1)))+
+  theme(legend.position = "none")
+
+ggsave("../figs/R1_corr_plot.png",width = 5 ,height=4,dpi = 300)
+
+which.hour <- temp.df.master %>%
+  group_by(ID,Day) %>% 
+  mutate(m10 = zoo::rollmean(SVMgs, k = 10*60, na.pad = T, align = "right"),
+         m10_start_time = lag(Time_hh,10*60),
+         m10_end_time = Time_hh,
+         m10_dur = ifelse(m10_end_time >= m10_start_time,
+                          m10_end_time - m10_start_time,
+                          m10_end_time + 24 - m10_start_time),
+         m10_dur = times(m10_dur))
+
+ggdensity(which.hour$m10_dur)
+  # group_by(ID,Day) %>%
+  # mutate(max_m10 = max(m10,na.rm = T)) %>% 
+  # filter(m10 == max_m10)
+```
+
+
+# IS IV for each week
+```{r}
+temp.df.master$Time_hhmmss <- times(paste0(temp.df.master$Time, ":00"))
+temp.df.master$Time_hh <- hours(temp.df.master$Time_hhmmss)
+
+per_hour_data <- temp.df.master%>%
+  # filter(Time_hh > 8 & Time_hh <= 18) %>% 
+  group_by(ID,Allocation,Day,Date,Time_hh) %>%
+  summarise(mean_enmo = mean(SVMgs, na.rm = T)) %>% 
+  ungroup()%>%filter(Day >= -14 & Day <= 28) %>% 
+  left_join(df_hlm %>% 
+              rename(Day = day) %>% 
+              select(ID,Day,Gender,Age,posLog,pos_vmu,movement_L5_mean:time_M10_mu))
+
+per_hour_data$phase[per_hour_data$Day < 1] <- "pre"
+per_hour_data$phase[per_hour_data$Day >= 1 & per_hour_data$Day <= 7] <- "post1"
+per_hour_data$phase[per_hour_data$Day >= 8 & per_hour_data$Day <= 14] <- "post2"
+per_hour_data$phase[per_hour_data$Day >= 15 & per_hour_data$Day <= 21] <- "post3"
+per_hour_data$phase[per_hour_data$Day >= 22 & per_hour_data$Day <= 28] <- "post4"
+
+per_hour_data$phase <- factor(per_hour_data$phase, levels = c("pre","post1","post2","post3","post4")) #,"post5","post6"
+
+per_hour_data <- per_hour_data %>%
+  mutate(DateTime = as.POSIXct(paste(Date, Time_hh), format = "%m/%d/%y %H"))
+
+# Define a function to calculate IS and IV
+calculate_IS_IV <- function(data) {
+  n <- nrow(data)
+  x_bar <- mean(data$mean_enmo, na.rm = TRUE)
+  
+  # Interdaily Stability (IS): Correlation of hourly values with their mean values for each hour of the day
+  mean_by_hour <- data %>% 
+    group_by(Time_hh) %>%
+    summarise(mean_hourly_enmo = mean(mean_enmo, na.rm = TRUE))
+  
+  merged_data <- data %>% 
+    left_join(mean_by_hour, by = "Time_hh")
+  
+  #IS <- cor(merged_data$mean_enmo, merged_data$mean_hourly_enmo, use = "complete.obs")^2
+   IS <- (n * sum((merged_data$mean_hourly_enmo - x_bar)^2))/((n-1) * sum((merged_data$mean_enmo - x_bar)^2))
+  
+  # Intradaily Variability (IV): Measures hour-to-hour variability
+  sum_diff_squared <- sum((diff(data$mean_enmo))^2, na.rm = TRUE)
+  sum_deviation_squared <- sum((data$mean_enmo - x_bar)^2, na.rm = TRUE)
+  IV <- (n * sum_diff_squared) / ((n - 1) * sum_deviation_squared)
+  
+  return(data.frame(IS = IS, IV = IV))
+}
+
+# Apply this function by 'ID' and 'phase'
+ISIV_results <- per_hour_data %>%
+  group_by(ID, phase,Allocation,Age,Gender) %>%
+  arrange(DateTime) %>%
+  summarise(IS_IV = list(calculate_IS_IV(cur_data()))) %>%
+  unnest_wider(IS_IV) %>% 
+  left_join(per_hour_data %>%
+              ungroup()%>%
+              select(-Gender) %>% 
+              group_by(ID, phase,Allocation) %>% 
+              summarise_at(vars(mean_enmo:time_M10_mu),~mean(.x,na.rm = T)))
+
+ISIV_results$Allocation[ISIV_results$Allocation == "A"] <- "control"
+ISIV_results$Allocation[ISIV_results$Allocation == "B"] <- "lithium"
+```
+
+#correlation heatmap
+```{r}
+find.corr <- function(df,a,b){
+  #df is the dataframe
+  #a(IV) and b(DV) are the column index to which the model is fitted
+  iv <- names(df)[a]
+  dv <- names(df)[b]
+  my.formula = as.formula(paste0("scale(",iv,") ~ scale(",dv,") + (1 |ID/Allocation)"))
+  my.lme <- summary(lmer(my.formula,df))
+  return(c(my.lme$coefficients[2,1],my.lme$coefficients[2,5])) #beta, p
+}
+```
+
+```{r}
+num.row2 = ncol(ISIV_results)-6
+
+my.corr.mat2 <- matrix(nrow = num.row2, ncol = num.row2)
+my.corr.pmat2 <- matrix(nrow = num.row2, ncol = num.row2)
+
+rownames(my.corr.mat2) <- names(ISIV_results)[6:(num.row2+5)]
+colnames(my.corr.mat2) <- names(ISIV_results)[6:(num.row2+5)]
+rownames(my.corr.pmat2) <- names(ISIV_results)[6:(num.row2+5)]
+colnames(my.corr.pmat2) <- names(ISIV_results)[6:(num.row2+5)]
+
+for (i in 1:num.row2){
+  my.corr.mat2[i,i] = 1
+  my.corr.pmat2[i,i] = 0
+}
+
+for (a in 6:(num.row2+5)){
+  for (b in 6:(num.row2+5)){
+    if (a != b){
+      temp_out <- find.corr(ISIV_results,a,b)
+      my.corr.mat2[a-5,b-5] = temp_out[1]
+      my.corr.pmat2[a-5,b-5] = temp_out[2]
+    }
+  }
+}
+
+ggcorrplot::ggcorrplot(my.corr.mat2,p.mat = my.corr.pmat2,insig = "blank",colors=c("orange", "white", "steelblue4"),lab = TRUE, digits = 1)
+
+# summary(lmer(movement_M10_mean ~ phase * Allocation + (1|ID),ISIV_results))
+```
+
+```{r}
+
+summary(l1<-lmer(IS ~ Allocation * phase + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
+summary(lmer(IS ~ Allocation * phase + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results %>% 
+               mutate(Allocation = factor(Allocation, levels = c("lithium","control")))))
+summary(lmer(IS ~ Allocation * phase + movement_M10_vmu + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
+summary(lmer(IS ~ Allocation * phase + movement_M10_s + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
+
+ee1 <- as.data.frame(Effect(c("phase", "Allocation"),l1))
+
+stat.test <- as.data.frame(round(summary(l1)$coefficients,3))[11:14,]%>%
+  rename(p_val = `Pr(>|t|)`)
+
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$Allocation == "control",]%>%
+  rename(group1 = phase))%>%
+  mutate(y.position = ee1$upper[1])%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+p1<-ggplot(ee1, aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=orangeNavyPalette)+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  geom_line(aes(group = Allocation), linewidth = 1)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "IS",y="interdaily stability")+ 
+  stat_pvalue_manual(stat.test, label = "p_sig",vjust = -1)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))+
+  ylim(0.2,0.8)
+
+summary(l2<-lmer(IV ~ Allocation * phase + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
+
+ee2 <- as.data.frame(Effect(c("phase", "Allocation"),l2))
+
+stat.test <- as.data.frame(round(summary(l2)$coefficients,3))[11:14,]%>%
+  rename(p_val = `Pr(>|t|)`)
+
+stat.test$group1 <- c("post1","post2","post3","post4")
+stat.test$group2 <- c("post1","post2","post3","post4")
+
+stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$Allocation == "control",]%>%
+  rename(group1 = phase))%>%
+  mutate(y.position = ee2$upper[1])%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+p2<-ggplot(ee2, aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=orangeNavyPalette)+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  geom_line(aes(group = Allocation), linewidth = 1)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "IV",y="intradaily variability")+ 
+  stat_pvalue_manual(stat.test, label = "p_sig",vjust = -3)+
+  scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))+
+  ylim(0.4,1.4)
+
+p1+p2+
+  plot_annotation(tag_levels = c("a"))
+ggsave("../figs/ISIV.png",width = 7 ,height=3,dpi = 300)
+
+```
+
+### vmu and IS
+
+```{r}
+summary(lmer(scale(IS) ~ scale(movement_M10_vmu) + (1|ID/Allocation),ISIV_results))
+
+df_change <- ISIV_results %>% 
+  group_by(ID, Allocation, phase,Age,Gender) %>% 
+  summarise_at(vars(movement_M10_vmu,movement_M10_mean,
+                    time_M10_vmu,time_M10_mean,posLog,pos_vmu,IS,IV), ~mean(.x, na.rm = T)) %>% 
+  pivot_wider(names_from = phase, values_from = c(movement_M10_vmu,movement_M10_mean,
+                                                  time_M10_vmu,time_M10_mean,posLog,pos_vmu,IS,IV)) %>% 
+  rowwise() %>% 
+  mutate(M10_change = `movement_M10_mean_post4` - `movement_M10_mean_pre`,
+         M10_vmu_change = `movement_M10_vmu_post4` - `movement_M10_vmu_pre`,
+         timeM10_change = `time_M10_mean_post4` - `time_M10_mean_pre`,
+         timeM10_vmu_change = `time_M10_vmu_post4` - `time_M10_vmu_pre`,
+         posLog_change = `posLog_post4` - `posLog_pre`,
+         pos_vmu_change = `pos_vmu_post4` - `pos_vmu_pre`,
+         IS_change = `IS_post4` - `IS_pre`,
+         IV_change = `IV_post4` - `IV_pre`)
+
+summary(l1 <- lm(IS_change ~ M10_vmu_change + Age + Gender, df_change))
+lm.beta::lm.beta(l1)
+ggplot(df_change, aes(y = IS_change, x = M10_vmu_change))+
+  geom_hline(yintercept = 0, linetype = "dashed")+
+  geom_vline(xintercept = 0, linetype = "dashed")+
+  geom_smooth(method = "lm", color = "black")+
+  geom_point(aes(color = Allocation))+
+  scale_color_manual(values = orangeNavyPalette)+
+  labs(x = "change in M10 volatility",
+       y = "change in IS")
+
+summary(l1 <- lm(IV_change ~ M10_vmu_change + Age + Gender, df_change))
+ggplot(df_change, aes(y = IV_change, x = M10_vmu_change))+
+  geom_hline(yintercept = 0, linetype = "dashed")+
+  geom_vline(xintercept = 0, linetype = "dashed")+
+  geom_smooth(method = "lm", color = "black")+
+  geom_point(aes(color = Allocation))+
+  scale_color_manual(values = orangeNavyPalette)+
+  labs(x = "change in M10 volatility",
+       y = "change in IV")
+```
+
+
+
+# IS IV for pre/post
+```{r}
+per_hour_data <- temp.df.master%>%
+  # filter(Time_hh > 8 & Time_hh <= 18) %>% 
+  group_by(ID,Allocation,Day,Date,Time_hh) %>%
+  summarise(mean_enmo = mean(SVMgs, na.rm = T)) %>% 
+  ungroup()%>%filter(Day >= -14 & Day <= 28) %>% 
+  left_join(df_hlm %>% 
+              rename(Day = day) %>% 
+              select(ID,Day,posLog,pos_vmu,movement_L5_mean:time_M10_mu))
+
+per_hour_data$phase[per_hour_data$Day < 1] <- "pre"
+per_hour_data$phase[per_hour_data$Day >= 1 & per_hour_data$Day <= 28] <- "post"
+
+per_hour_data$phase <- factor(per_hour_data$phase, levels = c("pre","post")) #,"post5","post6"
+
+per_hour_data <- per_hour_data %>%
+  mutate(DateTime = as.POSIXct(paste(Date, Time_hh), format = "%m/%d/%y %H"))
+
+
+n <- nrow(per_hour_data)
+  
+# Define a function to calculate IS and IV
+calculate_IS_IV <- function(data) {
+  n <- nrow(data)
+  x_bar <- mean(data$mean_enmo, na.rm = TRUE)
+  
+  # Interdaily Stability (IS): Correlation of hourly values with their mean values for each hour of the day
+  mean_by_hour <- data %>% 
+    group_by(Time_hh) %>%
+    summarise(mean_hourly_enmo = mean(mean_enmo, na.rm = TRUE))
+  
+  merged_data <- data %>% 
+    left_join(mean_by_hour, by = "Time_hh")
+  
+  IS <- cor(merged_data$mean_enmo, merged_data$mean_hourly_enmo, use = "complete.obs")^2
+  
+  # Intradaily Variability (IV): Measures hour-to-hour variability
+  sum_diff_squared <- sum((diff(data$mean_enmo))^2, na.rm = TRUE)
+  sum_deviation_squared <- sum((data$mean_enmo - x_bar)^2, na.rm = TRUE)
+  IV <- (n * sum_diff_squared) / ((n - 1) * sum_deviation_squared)
+  
+  return(data.frame(IS = IS, IV = IV))
+}
+
+# Apply this function by 'ID' and 'phase'
+ISIV_results <- per_hour_data %>%
+  group_by(ID, phase,Allocation) %>%
+  arrange(DateTime) %>%
+  summarise(IS_IV = list(calculate_IS_IV(cur_data()))) %>%
+  unnest_wider(IS_IV) %>% 
+  left_join(per_hour_data %>% 
+              group_by(ID, phase,Allocation) %>% 
+              summarise_at(vars(mean_enmo:time_M10_mu),~mean(.x,na.rm = T)))
+ISIV_results$Allocation[ISIV_results$Allocation == "A"] <- "control"
+ISIV_results$Allocation[ISIV_results$Allocation == "B"] <- "lithium"
+```
+
+
+```{r}
+
+summary(l1<-lmer(IS ~ Allocation * phase + posLog + pos_vmu + (1|ID),ISIV_results))
+summary(lmer(IS ~ Allocation * phase + movement_M10_vmu + posLog + pos_vmu + (1|ID),ISIV_results))
+
+ee1 <- as.data.frame(Effect(c("phase", "Allocation"),l1))
+
+stat.test <- as.data.frame(round(summary(l1)$coefficients,3))[c(6),]%>%
+  rename(p_val = `Pr(>|t|)`)
+
+stat.test$group1 <- c("post")
+stat.test$group2 <- c("post")
+
+stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$Allocation == "control",]%>%
+  rename(group1 = phase))%>%
+  mutate(y.position = ee1$upper[1])%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+ggplot(ee1, aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=orangeNavyPalette)+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  geom_line(aes(group = Allocation), linewidth = 1)+
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank())+
+  labs(title = "",y="positive mood level")+ 
+  stat_pvalue_manual(stat.test, label = "p_sig",vjust = -1)+
+  scale_x_discrete(labels = c("run-in","post-randomization"))+
+  ylim(0,1)
+
+summary(l2<-lmer(IV ~ Allocation * phase + posLog + pos_vmu + (1|ID),ISIV_results))
+
+ee2 <- as.data.frame(Effect(c("phase", "Allocation"),l2))
+
+stat.test <- as.data.frame(round(summary(l2)$coefficients,3))[9:12,]%>%
+  rename(p_val = `Pr(>|t|)`)
+x
+stat.test$group1 <- c("post")
+stat.test$group2 <- c("post")
+
+stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$Allocation == "control",]%>%
+  rename(group1 = phase))%>%
+  mutate(y.position = ee2$upper[1])%>%
+  mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
+
+ggplot(ee2, aes(x = phase, y = fit, color = Allocation))+
+  scale_color_manual(values=orangeNavyPalette)+
+  geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
+    geom_point(size = 3)+
+  theme(panel.grid.major.y = element_line(color = "blackx",size = 0.2),
+        panel.grid.minor.y = element_blank(),
+         panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle=45))+
+  labs(title = "",y="positive mood level")+ 
+  stat_pvalue_manual(stat.test, label = "p_sig",vjust = -1)+
+  scale_x_discrete(labels = c("run-in","post-randomization"))+
+  ylim(0,1.5)
+```
+
+
+# show example time series of high vs. low vmu participants
+```{r}
+ranked_vmu<-df_hlm %>% 
+  filter(phase != "pre",!is.na(movement_M10_vmu)) %>% 
+  group_by(ID) %>% 
+  summarise(mean_M10_vmu = mean(movement_M10_vmu,na.rm = T),
+            mean_M10_s = mean(movement_M10_s,na.rm = T),
+            valid_days = max(row_number())) %>% 
+  arrange(mean_M10_vmu,desc(mean_M10_s))
+
+min_id = c("OL0039","OL0369") #ranked_vmu$ID[1:4]
+max_id = c("OL0191","OL0136") #ranked_vmu$ID[(nrow(ranked_vmu)-3):nrow(ranked_vmu)]
+
+p1<-ggplot(df_hlm %>% 
+  filter(phase != "pre")%>% 
+         filter(ID %in% c(max_id,min_id)) %>% 
+         mutate(group = ifelse(ID %in% max_id, "high_volatility","low_volatility")), 
+       aes(x = day, y = movement_M10_mean))+
+  geom_line(aes(group = ID, color = ID),linewidth = 1)+
+  scale_color_brewer(palette = "Dark2")+
+  facet_wrap(~group)+
+  scale_x_continuous(breaks = c(1,7,14,21,28))+
+  theme(legend.position = "none")+
+  labs(y = "daily M10 level",
+       x = "days post-randomization")
+
+
+rankeds<-df_hlm %>% 
+  filter(phase != "pre",!is.na(movement_M10_s)) %>% 
+  group_by(ID)  %>% 
+  summarise(mean_M10_vmu = mean(movement_M10_vmu,na.rm = T),
+            mean_M10_s = mean(movement_M10_s,na.rm = T),
+            valid_days = max(row_number())) %>% 
+  arrange(mean_M10_s,desc(mean_M10_vmu))
+
+min_id = c("OL0191","OL0369") #rankeds$ID[1:4]
+max_id = c("OL0002","OL0025")#rankeds$ID[(nrow(rankeds)-3):nrow(rankeds)]
+
+p2<-ggplot(df_hlm %>% 
+  filter(phase != "pre")%>% 
+         filter(ID %in% c(max_id,min_id)) %>% 
+         mutate(group = ifelse(ID %in% max_id, "high_noise","low_noise")), 
+       aes(x = day, y = movement_M10_mean))+
+  geom_line(aes(group = ID, color = ID),linewidth = 1)+
+  scale_color_brewer(palette = "Set1")+
+  facet_wrap(~group)+
+  scale_x_continuous(breaks = c(1,7,14,21,28))+
+  theme(legend.position = "none")+
+  labs(y = "daily M10 level",
+       x = "days post-randomization")
+
+p1+p2
+ggsave("../figs/R2_example.png",width = 7,height=3,dpi = 300)
+```
+
+# analyze week-of-day and seasonal effect
+## first, does these factors influence M10, L5 and their onset time?
+```{r}
+summary(l1<-lmer(movement_M10_mean ~ Season + weekday_weekend+ (1|ID),df_hlm))
+summary(l2<-lmer(movement_L5_mean ~ Season + weekday_weekend+ (1|ID),df_hlm))
+summary(l3<-lmer(time_M10_mean ~ Season + weekday_weekend + (1|ID),df_hlm))
+summary(l4<-lmer(time_L5_mean ~ Season + weekday_weekend+ (1|ID),df_hlm))
+summary(lmer(posLog ~ Season + weekday_weekend + (1|ID),df_hlm))
+summary(lmer(negLog ~ Season + weekday_weekend + (1|ID),df_hlm))
+summary(lmer(posLog ~ Datey + (1|ID),df_hlm))
+
+plot_model(l4, type = "pred", terms = "weekday_weekend")
+
+plot_model(l1, type = "pred", terms = "Datey")
+plot_model(l2, type = "pred", terms = "Datey")
+plot_model(l3, type = "pred", terms = "Datey")
+plot_model(l4, type = "pred", terms = "Datey")
+
+
+summary(l1<-lmer(movement_M10_vmu ~ Season + weekday_weekend+ (1|ID),df_hlm))
+summary(l2<-lmer(movement_M10_s ~ Season + weekday_weekend+ (1|ID),df_hlm))
+summary(l3<-lmer(time_M10_vmu ~ Season + weekday_weekend + (1|ID),df_hlm))
+summary(l4<-lmer(time_M10_s ~ Season + weekday_weekend+ (1|ID),df_hlm))
+```
+
+# separate models for everything
+```{r}
+summary(lmer(movement_M10_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + movement_L5_mean + (1|ID),data = df_hlm))
+summary(lmer(movement_L5_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_mean+ (1|ID),data = df_hlm))
+summary(lmer(time_M10_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +time_L5_mean+ (1|ID),data = df_hlm))
+summary(lmer(time_L5_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season  +time_L5_mean+ (1|ID),data = df_hlm))
+
+summary(lmer(movement_M10_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_s+ (1|ID),data = df_hlm))
+summary(lmer(movement_M10_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_vmu+ (1|ID),data = df_hlm))
+summary(lmer(movement_L5_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_L5_vmu+ (1|ID),data = df_hlm))
+summary(lmer(movement_L5_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + movement_L5_vmu+(1|ID),data = df_hlm))
+
+summary(lmer(time_M10_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season+time_M10_s + (1|ID),data = df_hlm))
+summary(lmer(time_M10_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +time_M10_vmu+ (1|ID),data = df_hlm))
+summary(lmer(time_L5_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + time_L5_s+(1|ID),data = df_hlm))
+summary(lmer(time_L5_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + time_L5_vmu+(1|ID),data = df_hlm))
+```
+
+# fitting model to only post weeks
+### raw value
+```{r}
+model_formula_mean <- val ~ Allocation * movement_type * phase + posLog + pos_vmu  + Age + Gender + Season +  (movement_type|ID)
+
+df_hlm_lmer_movement_mean2 <- df_hlm%>%
+  filter(phase != "pre") %>% 
+  select(ID,Allocation,phase,day,movement_L5_mean,movement_M10_mean,Age,Gender,posLog, negLog, pos_vmu,neg_vmu,Season,
+         Dateseason,weekday_weekend)%>%
+  pivot_longer(c(movement_L5_mean,movement_M10_mean),names_pattern =  "movement_(.*)_mean",names_to = c("movement_type"),values_to = "val")
+
+df_hlm_lmer_movement_mean2$movement_type <- factor(df_hlm_lmer_movement_mean$movement_type)
+df_hlm_lmer_movement_mean2$movement_type <- relevel(df_hlm_lmer_movement_mean2$movement_type, ref = "M10")
+
+df_hlm_lmer_movement_mean2$Allocation <- factor(df_hlm_lmer_movement_mean2$Allocation, levels = c("control","lithium"))
+summary(lmer(model_formula_mean,data = df_hlm_lmer_movement_mean2))
+```
+
+### variability
+```{r include=TRUE}
+model_formula <- val ~ Allocation * var_type * movement_type * phase + posLog + pos_vmu + Age + Gender + Season + (var_type * movement_type| ID)
+
+df_hlm_lmer_movement_variability2 <- df_hlm%>%
+  filter(phase != "pre") %>% 
+  select(ID,Season,Allocation,day,phase,movement_L5_s,movement_L5_vmu, movement_M10_s,movement_M10_vmu,Age,Gender,posLog, negLog, pos_vmu,neg_vmu,
+         Dateseason,weekday_weekend)%>%
+  pivot_longer(c(movement_L5_s,movement_L5_vmu, movement_M10_s,movement_M10_vmu),names_pattern =  "movement_(.*)_(.*)",names_to = c("movement_type","var_type"),values_to = "val")%>%
+  mutate(var_type = if_else(var_type == "vmu","volatility","noise"))
+
+df_hlm_lmer_movement_variability2$var_type <- factor(df_hlm_lmer_movement_variability2$var_type)
+df_hlm_lmer_movement_variability2$var_type <- relevel(df_hlm_lmer_movement_variability2$var_type, ref = "volatility")
+df_hlm_lmer_movement_variability2$movement_type <- factor(df_hlm_lmer_movement_variability2$movement_type)
+df_hlm_lmer_movement_variability2$movement_type <- relevel(df_hlm_lmer_movement_variability2$movement_type, ref = "M10")
+df_hlm_lmer_movement_variability2$Allocation <- factor(df_hlm_lmer_movement_variability2$Allocation, levels = c("control","lithium"))
+
+summary(lmer(model_formula,data = df_hlm_lmer_movement_variability2))
+```

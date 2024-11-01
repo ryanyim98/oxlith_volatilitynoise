@@ -24,6 +24,7 @@ oxlith.Rmd
 
 # RStudio files
 .Rproj.user/
+Oxlith_code.Rproj
 
 # produced vignettes
 vignettes/*.html
