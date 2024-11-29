@@ -98,27 +98,28 @@ df_isiv_actigraph <- left_join(df_isiv_actigraph %>% select(-Allocation),
                                by = "ID") %>% 
   relocate(Allocation)
 df_isiv_actigraph$Allocation
-
+df_isiv_actigraph$group_assignment[df_isiv_actigraph$Allocation == "A"] <- "control"
+df_isiv_actigraph$group_assignment[df_isiv_actigraph$Allocation == "B"] <- "lithium"
 
 df_isiv_actigraph_ttest1 <- df_isiv_actigraph %>% 
-  group_by(ID,Allocation) %>% 
+  group_by(ID,group_assignment) %>% 
   summarise(IS_interdailystability = mean(IS_interdailystability),
             IV_intradailyvariability = mean(IV_intradailyvariability))
 
-summary(l1<-lm(IS_interdailystability~Allocation,df_isiv_actigraph_ttest1))
-plot_model(l1, type = "pred", terms = "Allocation")
+summary(l1<-lm(IS_interdailystability~group_assignment,df_isiv_actigraph_ttest1))
+plot_model(l1, type = "pred", terms = "group_assignment")
 
-summary(lm(IV_intradailyvariability~Allocation,df_isiv_actigraph_ttest1))
+summary(lm(IV_intradailyvariability~group_assignment,df_isiv_actigraph_ttest1))
 
 df_isiv_actigraph_ttest2 <- df_isiv_actigraph %>% filter(startday > 0) %>% 
-  group_by(ID,Allocation) %>% 
+  group_by(ID,group_assignment) %>% 
   summarise(IS_interdailystability = mean(IS_interdailystability),
             IV_intradailyvariability = mean(IV_intradailyvariability))
 
-unique(df_isiv_actigraph_ttest$ID)
+unique(df_isiv_actigraph_ttest2$ID)
 
-summary(lm(IS_interdailystability~Allocation,df_isiv_actigraph_ttest2))
-summary(lm(IV_intradailyvariability~Allocation,df_isiv_actigraph_ttest2))
+summary(lm(IS_interdailystability~group_assignment,df_isiv_actigraph_ttest2))
+summary(lm(IV_intradailyvariability~group_assignment,df_isiv_actigraph_ttest2))
 ```
 
 # combine raw data 
@@ -151,6 +152,11 @@ for (s in subjects){
   
   temp.df.master <- rbind(temp.df.master,temp.df.all)
 }
+
+temp.df.master$group_assignment[temp.df.master$Allocation == "A"] <- "control"
+temp.df.master$group_assignment[temp.df.master$Allocation == "B"] <- "lithium"
+
+temp.df.master <- left_join(temp.df.master,df_demo %>% select(ID,Season))
 
 write.csv(temp.df.master,paste0('../../data/raw_per_minute_data/per_min_data_master.csv'))
 ```
@@ -257,10 +263,9 @@ activity<-temp.df.master %>%
          m5 = zoo::rollmean(SVMgs, k = 5*60, na.pad = T, align = "right"),
          m4 = zoo::rollmean(SVMgs, k = 4*60, na.pad = T, align = "right"),
          m3 = zoo::rollmean(SVMgs, k = 3*60, na.pad = T, align = "right"),
-         m2 = zoo::rollmean(SVMgs, k = 2*60, na.pad = T, align = "right"),
-         m1 = zoo::rollmean(SVMgs, k = 1*60, na.pad = T, align = "right")) %>% 
+         m2 = zoo::rollmean(SVMgs, k = 2*60, na.pad = T, align = "right")) %>% 
   group_by(ID,Day) %>%
-  summarise_at(vars(M10,m10:m1),~max(.x,na.rm = T)) %>% 
+  summarise_at(vars(M10,m10:m2),~max(.x,na.rm = T)) %>% 
   filter(m10 != -Inf,M10 != -Inf)
 
 num.row2 = ncol(activity)-3
@@ -324,7 +329,7 @@ temp.df.master$Time_hh <- hours(temp.df.master$Time_hhmmss)
 
 per_hour_data <- temp.df.master%>%
   # filter(Time_hh > 8 & Time_hh <= 18) %>% 
-  group_by(ID,Allocation,Day,Date,Time_hh) %>%
+  group_by(ID,group_assignment,Day,Date,Time_hh,Season) %>%
   summarise(mean_enmo = mean(SVMgs, na.rm = T)) %>% 
   ungroup()%>%filter(Day >= -14 & Day <= 28) %>% 
   left_join(df_hlm %>% 
@@ -368,18 +373,15 @@ calculate_IS_IV <- function(data) {
 
 # Apply this function by 'ID' and 'phase'
 ISIV_results <- per_hour_data %>%
-  group_by(ID, phase,Allocation,Age,Gender) %>%
+  group_by(ID, phase,group_assignment,Age,Gender,Season) %>%
   arrange(DateTime) %>%
   summarise(IS_IV = list(calculate_IS_IV(cur_data()))) %>%
   unnest_wider(IS_IV) %>% 
   left_join(per_hour_data %>%
               ungroup()%>%
               select(-Gender) %>% 
-              group_by(ID, phase,Allocation) %>% 
+              group_by(ID, phase,group_assignment) %>% 
               summarise_at(vars(mean_enmo:time_M10_mu),~mean(.x,na.rm = T)))
-
-ISIV_results$Allocation[ISIV_results$Allocation == "A"] <- "control"
-ISIV_results$Allocation[ISIV_results$Allocation == "B"] <- "lithium"
 ```
 
 #correlation heatmap
@@ -389,7 +391,7 @@ find.corr <- function(df,a,b){
   #a(IV) and b(DV) are the column index to which the model is fitted
   iv <- names(df)[a]
   dv <- names(df)[b]
-  my.formula = as.formula(paste0("scale(",iv,") ~ scale(",dv,") + (1 |ID/Allocation)"))
+  my.formula = as.formula(paste0("scale(",iv,") ~ scale(",dv,") + (1 |ID/group_assignment)"))
   my.lme <- summary(lmer(my.formula,df))
   return(c(my.lme$coefficients[2,1],my.lme$coefficients[2,5])) #beta, p
 }
@@ -427,68 +429,69 @@ ggcorrplot::ggcorrplot(my.corr.mat2,p.mat = my.corr.pmat2,insig = "blank",colors
 ```
 
 ```{r}
+summary(l1<-lmer(IS ~ group_assignment * phase + posLog + pos_vmu +Age + Gender + Season + (1|ID),ISIV_results))
+summary(lmer(IS ~ group_assignment * phase + posLog + pos_vmu +Age + Gender+ Season+(1|ID),ISIV_results %>% 
+               mutate(group_assignment = factor(group_assignment, levels = c("lithium","control")))))
+summary(lmer(IS ~ group_assignment * phase + movement_M10_vmu + posLog + pos_vmu +Age + Gender+Season+ (1|ID),ISIV_results))
+summary(lmer(IS ~ group_assignment * phase + movement_M10_s + posLog + pos_vmu +Age + Gender+Season+ (1|ID),ISIV_results))
 
-summary(l1<-lmer(IS ~ Allocation * phase + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
-summary(lmer(IS ~ Allocation * phase + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results %>% 
-               mutate(Allocation = factor(Allocation, levels = c("lithium","control")))))
-summary(lmer(IS ~ Allocation * phase + movement_M10_vmu + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
-summary(lmer(IS ~ Allocation * phase + movement_M10_s + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
+ee1 <- as.data.frame(Effect(c("phase", "group_assignment"),l1))
 
-ee1 <- as.data.frame(Effect(c("phase", "Allocation"),l1))
-
-stat.test <- as.data.frame(round(summary(l1)$coefficients,3))[11:14,]%>%
+stat.test <- as.data.frame(round(summary(l1)$coefficients,3))[14:17,]%>%
   rename(p_val = `Pr(>|t|)`)
 
 stat.test$group1 <- c("post1","post2","post3","post4")
 stat.test$group2 <- c("post1","post2","post3","post4")
 
-stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$Allocation == "control",]%>%
+stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$group_assignment == "control",]%>%
   rename(group1 = phase))%>%
   mutate(y.position = ee1$upper[1])%>%
   mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
 
-p1<-ggplot(ee1, aes(x = phase, y = fit, color = Allocation))+
+p1<-ggplot(ee1, aes(x = phase, y = fit, color = group_assignment))+
   scale_color_manual(values=orangeNavyPalette)+
   geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
     geom_point(size = 3)+
-  geom_line(aes(group = Allocation), linewidth = 1)+
+  geom_line(aes(group = group_assignment), linewidth = 1)+
   theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
         panel.grid.minor.y = element_blank(),
          panel.grid.major.x = element_blank(),
-        axis.text.x = element_text(angle=45))+
+        axis.text.x = element_text(angle=30))+
   labs(title = "IS",y="interdaily stability")+ 
   stat_pvalue_manual(stat.test, label = "p_sig",vjust = -1)+
   scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))+
-  ylim(0.2,0.8)
+  ylim(0.2,0.8)+
+  theme(legend.position = "left")
 
-summary(l2<-lmer(IV ~ Allocation * phase + posLog + pos_vmu +Age + Gender+ (1|ID),ISIV_results))
+summary(l2<-lmer(IV ~ group_assignment * phase + posLog + pos_vmu +Age + Gender+Season+ (1|ID),ISIV_results))
 
-ee2 <- as.data.frame(Effect(c("phase", "Allocation"),l2))
+ee2 <- as.data.frame(Effect(c("phase", "group_assignment"),l2))
 
-stat.test <- as.data.frame(round(summary(l2)$coefficients,3))[11:14,]%>%
+stat.test <- as.data.frame(round(summary(l2)$coefficients,3))[14:17,]%>%
   rename(p_val = `Pr(>|t|)`)
 
 stat.test$group1 <- c("post1","post2","post3","post4")
 stat.test$group2 <- c("post1","post2","post3","post4")
 
-stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$Allocation == "control",]%>%
+stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$group_assignment == "control",]%>%
   rename(group1 = phase))%>%
   mutate(y.position = ee2$upper[1])%>%
   mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
 
-p2<-ggplot(ee2, aes(x = phase, y = fit, color = Allocation))+
+p2<-ggplot(ee2, aes(x = phase, y = fit, color = group_assignment))+
   scale_color_manual(values=orangeNavyPalette)+
   geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
     geom_point(size = 3)+
-  geom_line(aes(group = Allocation), linewidth = 1)+
+  geom_line(aes(group = group_assignment), linewidth = 1)+
   theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
         panel.grid.minor.y = element_blank(),
          panel.grid.major.x = element_blank(),
-        axis.text.x = element_text(angle=45))+
+        axis.text.x = element_text(angle=30))+
   labs(title = "IV",y="intradaily variability")+ 
   stat_pvalue_manual(stat.test, label = "p_sig",vjust = -3)+
   scale_x_discrete(labels = c("run-in","week 1","week 2","week 3","week 4"))+
-  ylim(0.4,1.4)
+  ylim(0.4,1.4)+
+  theme(legend.position = "none")
 
 p1+p2+
   plot_annotation(tag_levels = c("a"))
@@ -499,10 +502,10 @@ ggsave("../figs/ISIV.png",width = 7 ,height=3,dpi = 300)
 ### vmu and IS
 
 ```{r}
-summary(lmer(scale(IS) ~ scale(movement_M10_vmu) + (1|ID/Allocation),ISIV_results))
+summary(lmer(scale(IS) ~ scale(movement_M10_vmu) + (1|ID/group_assignment),ISIV_results))
 
 df_change <- ISIV_results %>% 
-  group_by(ID, Allocation, phase,Age,Gender) %>% 
+  group_by(ID, group_assignment, phase,Age,Gender,Season) %>% 
   summarise_at(vars(movement_M10_vmu,movement_M10_mean,
                     time_M10_vmu,time_M10_mean,posLog,pos_vmu,IS,IV), ~mean(.x, na.rm = T)) %>% 
   pivot_wider(names_from = phase, values_from = c(movement_M10_vmu,movement_M10_mean,
@@ -517,23 +520,23 @@ df_change <- ISIV_results %>%
          IS_change = `IS_post4` - `IS_pre`,
          IV_change = `IV_post4` - `IV_pre`)
 
-summary(l1 <- lm(IS_change ~ M10_vmu_change + Age + Gender, df_change))
+summary(l1 <- lm(IS_change ~ M10_vmu_change + Age + Gender+Season, df_change))
 lm.beta::lm.beta(l1)
 ggplot(df_change, aes(y = IS_change, x = M10_vmu_change))+
   geom_hline(yintercept = 0, linetype = "dashed")+
   geom_vline(xintercept = 0, linetype = "dashed")+
   geom_smooth(method = "lm", color = "black")+
-  geom_point(aes(color = Allocation))+
+  geom_point(aes(color = group_assignment))+
   scale_color_manual(values = orangeNavyPalette)+
   labs(x = "change in M10 volatility",
        y = "change in IS")
 
-summary(l1 <- lm(IV_change ~ M10_vmu_change + Age + Gender, df_change))
+summary(l1 <- lm(IV_change ~ M10_vmu_change + Age + Gender + Season, df_change))
 ggplot(df_change, aes(y = IV_change, x = M10_vmu_change))+
   geom_hline(yintercept = 0, linetype = "dashed")+
   geom_vline(xintercept = 0, linetype = "dashed")+
   geom_smooth(method = "lm", color = "black")+
-  geom_point(aes(color = Allocation))+
+  geom_point(aes(color = group_assignment))+
   scale_color_manual(values = orangeNavyPalette)+
   labs(x = "change in M10 volatility",
        y = "change in IV")
@@ -595,17 +598,17 @@ ISIV_results <- per_hour_data %>%
   left_join(per_hour_data %>% 
               group_by(ID, phase,Allocation) %>% 
               summarise_at(vars(mean_enmo:time_M10_mu),~mean(.x,na.rm = T)))
-ISIV_results$Allocation[ISIV_results$Allocation == "A"] <- "control"
-ISIV_results$Allocation[ISIV_results$Allocation == "B"] <- "lithium"
+
+ISIV_results$group_assignment[ISIV_results$Allocation == "A"] <- "control"
+ISIV_results$group_assignment[ISIV_results$Allocation == "B"] <- "lithium"
 ```
 
 
 ```{r}
+summary(l1<-lmer(IS ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season + (1|ID),ISIV_results))
+summary(lmer(IS ~ group_assignment * phase + movement_M10_vmu + posLog + pos_vmu+ Age + Gender + Season + (1|ID),ISIV_results))
 
-summary(l1<-lmer(IS ~ Allocation * phase + posLog + pos_vmu + (1|ID),ISIV_results))
-summary(lmer(IS ~ Allocation * phase + movement_M10_vmu + posLog + pos_vmu + (1|ID),ISIV_results))
-
-ee1 <- as.data.frame(Effect(c("phase", "Allocation"),l1))
+ee1 <- as.data.frame(Effect(c("phase", "group_assignment"),l1))
 
 stat.test <- as.data.frame(round(summary(l1)$coefficients,3))[c(6),]%>%
   rename(p_val = `Pr(>|t|)`)
@@ -613,16 +616,16 @@ stat.test <- as.data.frame(round(summary(l1)$coefficients,3))[c(6),]%>%
 stat.test$group1 <- c("post")
 stat.test$group2 <- c("post")
 
-stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$Allocation == "control",]%>%
+stat.test <- left_join(stat.test,ee1[ee1$phase != "pre" & ee1$group_assignment == "control",]%>%
   rename(group1 = phase))%>%
   mutate(y.position = ee1$upper[1])%>%
   mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
 
-ggplot(ee1, aes(x = phase, y = fit, color = Allocation))+
+ggplot(ee1, aes(x = phase, y = fit, color = group_assignment))+
   scale_color_manual(values=orangeNavyPalette)+
   geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
     geom_point(size = 3)+
-  geom_line(aes(group = Allocation), linewidth = 1)+
+  geom_line(aes(group = group_assignment), linewidth = 1)+
   theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
         panel.grid.minor.y = element_blank(),
          panel.grid.major.x = element_blank())+
@@ -631,29 +634,29 @@ ggplot(ee1, aes(x = phase, y = fit, color = Allocation))+
   scale_x_discrete(labels = c("run-in","post-randomization"))+
   ylim(0,1)
 
-summary(l2<-lmer(IV ~ Allocation * phase + posLog + pos_vmu + (1|ID),ISIV_results))
+summary(l2<-lmer(IV ~ group_assignment * phase + posLog + pos_vmu + (1|ID),ISIV_results))
 
-ee2 <- as.data.frame(Effect(c("phase", "Allocation"),l2))
+ee2 <- as.data.frame(Effect(c("phase", "group_assignment"),l2))
 
 stat.test <- as.data.frame(round(summary(l2)$coefficients,3))[9:12,]%>%
   rename(p_val = `Pr(>|t|)`)
-x
+
 stat.test$group1 <- c("post")
 stat.test$group2 <- c("post")
 
-stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$Allocation == "control",]%>%
+stat.test <- left_join(stat.test,ee2[ee2$phase != "pre" & ee2$group_assignment == "control",]%>%
   rename(group1 = phase))%>%
   mutate(y.position = ee2$upper[1])%>%
   mutate(p_sig = if_else(p_val < 0.001,"***", if_else(p_val < 0.01, "**", if_else(p_val < 0.05, "*", "ns")) ))
 
-ggplot(ee2, aes(x = phase, y = fit, color = Allocation))+
+ggplot(ee2, aes(x = phase, y = fit, color = group_assignment))+
   scale_color_manual(values=orangeNavyPalette)+
   geom_errorbar(aes(ymin = lower,ymax=upper),width=0.1,color = "black")+
     geom_point(size = 3)+
-  theme(panel.grid.major.y = element_line(color = "blackx",size = 0.2),
+  theme(panel.grid.major.y = element_line(color = "black",size = 0.2),
         panel.grid.minor.y = element_blank(),
          panel.grid.major.x = element_blank(),
-        axis.text.x = element_text(angle=45))+
+        axis.text.x = element_text(angle=30))+
   labs(title = "",y="positive mood level")+ 
   stat_pvalue_manual(stat.test, label = "p_sig",vjust = -1)+
   scale_x_discrete(labels = c("run-in","post-randomization"))+
@@ -671,21 +674,23 @@ ranked_vmu<-df_hlm %>%
             valid_days = max(row_number())) %>% 
   arrange(mean_M10_vmu,desc(mean_M10_s))
 
-min_id = c("OL0039","OL0369") #ranked_vmu$ID[1:4]
-max_id = c("OL0191","OL0136") #ranked_vmu$ID[(nrow(ranked_vmu)-3):nrow(ranked_vmu)]
+min_id = c("OL0039") #ranked_vmu$ID[1:4]
+max_id = c("OL0191") #ranked_vmu$ID[(nrow(ranked_vmu)-3):nrow(ranked_vmu)]
 
 p1<-ggplot(df_hlm %>% 
   filter(phase != "pre")%>% 
          filter(ID %in% c(max_id,min_id)) %>% 
          mutate(group = ifelse(ID %in% max_id, "high_volatility","low_volatility")), 
        aes(x = day, y = movement_M10_mean))+
-  geom_line(aes(group = ID, color = ID),linewidth = 1)+
-  scale_color_brewer(palette = "Dark2")+
-  facet_wrap(~group)+
+  geom_line(aes(group = group, color = group),linewidth = 1)+
+  scale_color_manual(values = c("red","lightpink2"))+
   scale_x_continuous(breaks = c(1,7,14,21,28))+
-  theme(legend.position = "none")+
+  theme(legend.position = "top")+
+    labs(color = "")+
+  #ylim(30,150)+
   labs(y = "daily M10 level",
-       x = "days post-randomization")
+       x = "days post-randomization",
+       title = "Example real patient data")
 
 
 rankeds<-df_hlm %>% 
@@ -696,24 +701,33 @@ rankeds<-df_hlm %>%
             valid_days = max(row_number())) %>% 
   arrange(mean_M10_s,desc(mean_M10_vmu))
 
-min_id = c("OL0191","OL0369") #rankeds$ID[1:4]
-max_id = c("OL0002","OL0025")#rankeds$ID[(nrow(rankeds)-3):nrow(rankeds)]
+min_id = c("OL0369") #rankeds$ID[1:4]
+max_id = c("OL0025")#rankeds$ID[(nrow(rankeds)-3):nrow(rankeds)]
 
 p2<-ggplot(df_hlm %>% 
   filter(phase != "pre")%>% 
          filter(ID %in% c(max_id,min_id)) %>% 
          mutate(group = ifelse(ID %in% max_id, "high_noise","low_noise")), 
        aes(x = day, y = movement_M10_mean))+
-  geom_line(aes(group = ID, color = ID),linewidth = 1)+
-  scale_color_brewer(palette = "Set1")+
-  facet_wrap(~group)+
+  geom_line(aes(group = group, color = group),linewidth = 1)+
+  scale_color_manual(values = c("blue","steelblue1"))+
   scale_x_continuous(breaks = c(1,7,14,21,28))+
-  theme(legend.position = "none")+
+  labs(color = "")+
+  #ylim(30,150)+
+  theme(legend.position = "top")+
   labs(y = "daily M10 level",
        x = "days post-randomization")
 
-p1+p2
+p1+p2+
+  plot_annotation(tag_levels = "a")
 ggsave("../figs/R2_example.png",width = 7,height=3,dpi = 300)
+
+
+(p4a_M10 +theme(legend.position = "top")+ p11b_M10+theme(legend.position = "none") + p4b_M10+theme(legend.position = "none") + p12b_M10+theme(legend.position = "none") 
+  + pcorr1+theme(legend.position = "top")+labs(title = "Correlation of change")+pcorr2+theme(legend.position = "none")+p1+p2)+
+  plot_annotation(tag_levels = "A")+
+  plot_layout(nrow = 2)
+ggsave("../figs/FIG4_new.png",width = 11,height=7,dpi = 300)
 ```
 
 # analyze week-of-day and seasonal effect
@@ -743,47 +757,47 @@ summary(l4<-lmer(time_M10_s ~ Season + weekday_weekend+ (1|ID),df_hlm))
 
 # separate models for everything
 ```{r}
-summary(lmer(movement_M10_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + movement_L5_mean + (1|ID),data = df_hlm))
-summary(lmer(movement_L5_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_mean+ (1|ID),data = df_hlm))
-summary(lmer(time_M10_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +time_L5_mean+ (1|ID),data = df_hlm))
-summary(lmer(time_L5_mean ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season  +time_L5_mean+ (1|ID),data = df_hlm))
+summary(lmer(movement_M10_mean ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season + movement_L5_mean + (1|ID),data = df_hlm))
+summary(lmer(movement_L5_mean ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_mean+ (1|ID),data = df_hlm))
+summary(lmer(time_M10_mean ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season +time_L5_mean+ (1|ID),data = df_hlm))
+summary(lmer(time_L5_mean ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season  +time_L5_mean+ (1|ID),data = df_hlm))
 
-summary(lmer(movement_M10_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_s+ (1|ID),data = df_hlm))
-summary(lmer(movement_M10_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_vmu+ (1|ID),data = df_hlm))
-summary(lmer(movement_L5_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +movement_L5_vmu+ (1|ID),data = df_hlm))
-summary(lmer(movement_L5_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + movement_L5_vmu+(1|ID),data = df_hlm))
+summary(lmer(movement_M10_vmu ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_s+ (1|ID),data = df_hlm))
+summary(lmer(movement_M10_s ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season +movement_M10_vmu+ (1|ID),data = df_hlm))
+summary(lmer(movement_L5_vmu ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season +movement_L5_vmu+ (1|ID),data = df_hlm))
+summary(lmer(movement_L5_s ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season + movement_L5_vmu+(1|ID),data = df_hlm))
 
-summary(lmer(time_M10_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season+time_M10_s + (1|ID),data = df_hlm))
-summary(lmer(time_M10_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season +time_M10_vmu+ (1|ID),data = df_hlm))
-summary(lmer(time_L5_vmu ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + time_L5_s+(1|ID),data = df_hlm))
-summary(lmer(time_L5_s ~ Allocation * phase + posLog + pos_vmu + Age + Gender + Season + time_L5_vmu+(1|ID),data = df_hlm))
+summary(lmer(time_M10_vmu ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season+time_M10_s + (1|ID),data = df_hlm))
+summary(lmer(time_M10_s ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season +time_M10_vmu+ (1|ID),data = df_hlm))
+summary(lmer(time_L5_vmu ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season + time_L5_s+(1|ID),data = df_hlm))
+summary(lmer(time_L5_s ~ group_assignment * phase + posLog + pos_vmu + Age + Gender + Season + time_L5_vmu+(1|ID),data = df_hlm))
 ```
 
 # fitting model to only post weeks
 ### raw value
 ```{r}
-model_formula_mean <- val ~ Allocation * movement_type * phase + posLog + pos_vmu  + Age + Gender + Season +  (movement_type|ID)
+model_formula_mean <- val ~ group_assignment * movement_type * phase + posLog + pos_vmu  + Age + Gender + Season +  (movement_type|ID)
 
 df_hlm_lmer_movement_mean2 <- df_hlm%>%
   filter(phase != "pre") %>% 
-  select(ID,Allocation,phase,day,movement_L5_mean,movement_M10_mean,Age,Gender,posLog, negLog, pos_vmu,neg_vmu,Season,
+  select(ID,group_assignment,phase,day,movement_L5_mean,movement_M10_mean,Age,Gender,posLog, negLog, pos_vmu,neg_vmu,Season,
          Dateseason,weekday_weekend)%>%
   pivot_longer(c(movement_L5_mean,movement_M10_mean),names_pattern =  "movement_(.*)_mean",names_to = c("movement_type"),values_to = "val")
 
 df_hlm_lmer_movement_mean2$movement_type <- factor(df_hlm_lmer_movement_mean$movement_type)
 df_hlm_lmer_movement_mean2$movement_type <- relevel(df_hlm_lmer_movement_mean2$movement_type, ref = "M10")
 
-df_hlm_lmer_movement_mean2$Allocation <- factor(df_hlm_lmer_movement_mean2$Allocation, levels = c("control","lithium"))
+df_hlm_lmer_movement_mean2$group_assignment <- factor(df_hlm_lmer_movement_mean2$group_assignment, levels = c("control","lithium"))
 summary(lmer(model_formula_mean,data = df_hlm_lmer_movement_mean2))
 ```
 
 ### variability
 ```{r include=TRUE}
-model_formula <- val ~ Allocation * var_type * movement_type * phase + posLog + pos_vmu + Age + Gender + Season + (var_type * movement_type| ID)
+model_formula <- val ~ group_assignment * var_type * movement_type * phase + posLog + pos_vmu + Age + Gender + Season + (var_type * movement_type| ID)
 
 df_hlm_lmer_movement_variability2 <- df_hlm%>%
   filter(phase != "pre") %>% 
-  select(ID,Season,Allocation,day,phase,movement_L5_s,movement_L5_vmu, movement_M10_s,movement_M10_vmu,Age,Gender,posLog, negLog, pos_vmu,neg_vmu,
+  select(ID,Season,group_assignment,day,phase,movement_L5_s,movement_L5_vmu, movement_M10_s,movement_M10_vmu,Age,Gender,posLog, negLog, pos_vmu,neg_vmu,
          Dateseason,weekday_weekend)%>%
   pivot_longer(c(movement_L5_s,movement_L5_vmu, movement_M10_s,movement_M10_vmu),names_pattern =  "movement_(.*)_(.*)",names_to = c("movement_type","var_type"),values_to = "val")%>%
   mutate(var_type = if_else(var_type == "vmu","volatility","noise"))
@@ -792,7 +806,7 @@ df_hlm_lmer_movement_variability2$var_type <- factor(df_hlm_lmer_movement_variab
 df_hlm_lmer_movement_variability2$var_type <- relevel(df_hlm_lmer_movement_variability2$var_type, ref = "volatility")
 df_hlm_lmer_movement_variability2$movement_type <- factor(df_hlm_lmer_movement_variability2$movement_type)
 df_hlm_lmer_movement_variability2$movement_type <- relevel(df_hlm_lmer_movement_variability2$movement_type, ref = "M10")
-df_hlm_lmer_movement_variability2$Allocation <- factor(df_hlm_lmer_movement_variability2$Allocation, levels = c("control","lithium"))
+df_hlm_lmer_movement_variability2$group_assignment <- factor(df_hlm_lmer_movement_variability2$group_assignment, levels = c("control","lithium"))
 
 summary(lmer(model_formula,data = df_hlm_lmer_movement_variability2))
 ```
