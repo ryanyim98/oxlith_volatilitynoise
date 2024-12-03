@@ -104,6 +104,7 @@ chisq.test(table(df_demo[,c("Gender","group_assignment")]))
 
 #ethnicity
 table(df_demo[,c("Ethnicity","group_assignment")])
+table(df_demo[,c("Ethnicity","Gender","group_assignment")])
 chisq.test(table(df_demo[,c("Ethnicity","group_assignment")]))
 
 chisq.test(table(df_demo[,c("Season","group_assignment")]))
@@ -115,11 +116,22 @@ df_demo%>%
             sd_Age = round(sd(Age),2))
 t.test(df_control$Age,df_lithium$Age)
 
+df_demo%>%
+  group_by(group_assignment,Gender)%>%
+  summarise(mean_Age = round(mean(Age),2),
+            sd_Age = round(sd(Age),2))
+
 #BMI
 df_demo%>%
   group_by(group_assignment)%>%
   summarise(mean_BMI = round(mean(BMI),2),
             sd_BMI = round(sd(BMI),2))
+
+df_demo%>%
+  group_by(group_assignment,Gender)%>%
+  summarise(mean_BMI = round(mean(BMI),2),
+            sd_BMI = round(sd(BMI),2))
+
 t.test(df_control$BMI,df_lithium$BMI)
 
 #mood
@@ -138,6 +150,14 @@ df_mood%>%
 t.test(df_mood$pos_mean[df_mood$group_assignment == "lithium"],df_mood$pos_mean[df_mood$group_assignment == "control"])
 t.test(df_mood$neg_mean[df_mood$group_assignment == "lithium"],df_mood$neg_mean[df_mood$group_assignment == "control"])
 
+df_mood%>%
+  left_join(df_demo %>% select(Gender, ID)) %>% 
+  group_by(group_assignment,Gender)%>%
+  summarise(mean_pos = round(mean(pos_mean),2),
+            sd_po = round(sd(pos_mean),2),
+            mean_neg = round(mean(neg_mean),2),
+            sd_neg = round(sd(neg_mean),2))
+
 #recording days
 df_demo%>%
   group_by(group_assignment)%>%
@@ -145,20 +165,29 @@ df_demo%>%
 table(df_demo[,c("total.recording.days","group_assignment")])
 t.test(df_lithium$total.recording.days,df_control$total.recording.days)
 
+df_demo%>%
+  group_by(group_assignment,Gender)%>%
+  summarise(median_total.recording.days = median(total.recording.days, na.rm = TRUE))
+
 #missing days
 df_demo%>%
   group_by(group_assignment)%>%
   summarise(median_Missing.days = median(Missing.days, na.rm = TRUE))
 table(df_demo[,c("Missing.days","group_assignment")])
 t.test(df_lithium$Missing.days,df_control$Missing.days)
+df_demo%>%
+  group_by(group_assignment,Gender)%>%
+  summarise(median_Missing.days = median(Missing.days, na.rm = TRUE))
 
 #BP subtype
 table(df_demo[,c("Diagnosis","group_assignment")])
 chisq.test(table(df_demo[,c("Diagnosis","group_assignment")]))
+table(df_demo[,c("Diagnosis","group_assignment","Gender")])
 
 #season
 table(df_demo[,c("Season","group_assignment")])
 chisq.test(table(df_demo[,c("Season","group_assignment")]))
+table(df_demo[,c("Season","group_assignment","Gender")])
 ```
 
 ## plot data availability

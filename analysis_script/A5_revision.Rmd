@@ -690,7 +690,7 @@ p1<-ggplot(df_hlm %>%
   #ylim(30,150)+
   labs(y = "daily M10 level",
        x = "days post-randomization",
-       title = "Example real patient data")
+       title = "Representative patient data")
 
 
 rankeds<-df_hlm %>% 
