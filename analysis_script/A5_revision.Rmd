@@ -725,7 +725,7 @@ ggsave("../figs/R2_example.png",width = 7,height=3,dpi = 300)
 
 (p4a_M10 +theme(legend.position = "top")+ p11b_M10+theme(legend.position = "none") + p4b_M10+theme(legend.position = "none") + p12b_M10+theme(legend.position = "none") 
   + pcorr1+theme(legend.position = "top")+labs(title = "Correlation of change")+pcorr2+theme(legend.position = "none")+p1+p2)+
-  plot_annotation(tag_levels = "A")+
+  plot_annotation(tag_levels = "a")+
   plot_layout(nrow = 2)
 ggsave("../figs/FIG4_new.png",width = 11,height=7,dpi = 300)
 ```

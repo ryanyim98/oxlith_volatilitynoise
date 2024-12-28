@@ -510,6 +510,128 @@ round(my.corr.mat2,3)
 round(my.corr.pmat2,3)
 ggsave("../figs/S2_corr_plot.png",width = 6 ,height=6,dpi = 300)
 ```
+### for revision:
+```{r}
+find.corr2 <- function(df,a,b){
+  #df is the dataframe
+  #a(IV) and b(DV) are the column index to which the model is fitted
+  iv <- names(df)[a]
+  dv <- names(df)[b]
+  my.formula = as.formula(paste0("scale(",iv,") ~ scale(",dv,")+ (1 + scale(",dv,") |ID) + (1 + scale(",dv,") |phase)"))
+  my.lme <- summary(lmer(my.formula,df))
+  return(c(my.lme$coefficients[2,1],my.lme$coefficients[2,5])) #beta, p
+}
+```
+
+```{r}
+df_hlm_corr3 <- df_hlm%>%
+  filter(day <= 0) %>% 
+  select(ID,day, group_assignment,movement_M10_mean,
+         time_M10_mean,posLog,negLog,
+         movement_M10_vmu,
+         time_M10_vmu,
+         pos_vmu,neg_vmu,
+         movement_M10_s,
+         time_M10_s,
+         pos_s,neg_s)%>%
+  rename(M10 = movement_M10_mean,
+         timeM10 = time_M10_mean,
+         logPA = posLog,
+         logNA = negLog,
+         timeM10_vmu = time_M10_vmu,
+         M10_vmu = movement_M10_vmu,
+         PA_vmu = pos_vmu,
+         NA_vmu = neg_vmu,
+         M10_s = movement_M10_s,
+         timeM10_s = time_M10_s,
+         PA_s = pos_s,
+         NA_s = neg_s)
+
+num.row2 = ncol(df_hlm_corr3)-3
+
+my.corr.mat2 <- matrix(nrow = num.row2, ncol = num.row2)
+my.corr.pmat2 <- matrix(nrow = num.row2, ncol = num.row2)
+
+rownames(my.corr.mat2) <- names(df_hlm_corr3)[4:(num.row2+3)]
+colnames(my.corr.mat2) <- names(df_hlm_corr3)[4:(num.row2+3)]
+rownames(my.corr.pmat2) <- names(df_hlm_corr3)[4:(num.row2+3)]
+colnames(my.corr.pmat2) <- names(df_hlm_corr3)[4:(num.row2+3)]
+
+for (i in 1:num.row2){
+  my.corr.mat2[i,i] = 1
+  my.corr.pmat2[i,i] = 0
+}
+
+for (a in 4:(num.row2+3)){
+  for (b in 4:(num.row2+3)){
+    if (a != b){
+      temp_out <- find.corr(df_hlm_corr3,a,b)
+      my.corr.mat2[a-3,b-3] = temp_out[1]
+      my.corr.pmat2[a-3,b-3] = temp_out[2]
+    }
+  }
+}
+
+ggcorrplot::ggcorrplot(my.corr.mat2,p.mat = my.corr.pmat2,insig = "blank",colors=c("orange", "white", "steelblue4"),lab = TRUE, digits = 1)
+round(my.corr.mat2,3)
+round(my.corr.pmat2,3)
+ggsave("../figs/S2_corr_plot_baseline.png",width = 6 ,height=6,dpi = 300)
+```
+
+
+```{r}
+df_hlm_corr3 <- df_hlm%>%
+  select(ID,day, phase,group_assignment,movement_M10_mean,
+         time_M10_mean,posLog,negLog,
+         movement_M10_vmu,
+         time_M10_vmu,
+         pos_vmu,neg_vmu,
+         movement_M10_s,
+         time_M10_s,
+         pos_s,neg_s)%>%
+  rename(M10 = movement_M10_mean,
+         timeM10 = time_M10_mean,
+         logPA = posLog,
+         logNA = negLog,
+         timeM10_vmu = time_M10_vmu,
+         M10_vmu = movement_M10_vmu,
+         PA_vmu = pos_vmu,
+         NA_vmu = neg_vmu,
+         M10_s = movement_M10_s,
+         timeM10_s = time_M10_s,
+         PA_s = pos_s,
+         NA_s = neg_s)
+
+num.row2 = ncol(df_hlm_corr3)-4
+
+my.corr.mat2 <- matrix(nrow = num.row2, ncol = num.row2)
+my.corr.pmat2 <- matrix(nrow = num.row2, ncol = num.row2)
+
+rownames(my.corr.mat2) <- names(df_hlm_corr3)[5:(num.row2+4)]
+colnames(my.corr.mat2) <- names(df_hlm_corr3)[5:(num.row2+4)]
+rownames(my.corr.pmat2) <- names(df_hlm_corr3)[5:(num.row2+4)]
+colnames(my.corr.pmat2) <- names(df_hlm_corr3)[5:(num.row2+4)]
+
+for (i in 1:num.row2){
+  my.corr.mat2[i,i] = 1
+  my.corr.pmat2[i,i] = 0
+}
+
+for (a in 5:(num.row2+4)){
+  for (b in 5:(num.row2+4)){
+    if (a != b){
+      temp_out <- find.corr2(df_hlm_corr3,a,b)
+      my.corr.mat2[a-4,b-4] = temp_out[1]
+      my.corr.pmat2[a-4,b-4] = temp_out[2]
+    }
+  }
+}
+
+ggcorrplot::ggcorrplot(my.corr.mat2,p.mat = my.corr.pmat2,insig = "blank",colors=c("orange", "white", "steelblue4"),lab = TRUE, digits = 1)
+round(my.corr.mat2,3)
+round(my.corr.pmat2,3)
+ggsave("../figs/S2_corr_plot_intercept.png",width = 6 ,height=6,dpi = 300)
+```
 
 # time course plot with ribbon
 
@@ -594,13 +716,28 @@ ggsave("../figs/tc.png",width = 8 ,height=6,dpi = 300)
 # check M10
 df1 <- df_hlm%>%
   dplyr::filter(phase == "pre")%>%
-  group_by(group_assignment,ID)%>%
+  group_by(group_assignment,ID,Gender)%>%
   summarise_at(vars(movement_L5_mean:time_M10_mu), ~mean(.x, na.rm = TRUE))
 
 m01 <- manova(cbind(movement_M10_mean,movement_M10_vmu,time_M10_mean,time_M10_vmu) ~ group_assignment, data =df1)
 summary.aov(m01)
 
+df1 %>% 
+  ungroup() %>% 
+  summarise_at(vars(movement_L5_mean,movement_M10_mean,time_L5_mean,time_M10_mean), ~mean(.x, na.rm = TRUE))
 
+df1 %>% 
+  summarise_at(vars(movement_L5_mean,movement_M10_mean,time_L5_mean,time_M10_mean), ~round(mean(.x, na.rm = TRUE),2))
+df1 %>% 
+  summarise_at(vars(movement_L5_mean,movement_M10_mean,time_L5_mean,time_M10_mean), ~round(sd(.x, na.rm = TRUE),2))
+
+#for the SI table by gender
+df1 %>% 
+  group_by(Gender, group_assignment) %>% 
+  summarise_at(vars(movement_L5_mean,movement_M10_mean,time_L5_mean,time_M10_mean), ~round(mean(.x, na.rm = TRUE),2))
+df1 %>% 
+  group_by(Gender,group_assignment) %>% 
+  summarise_at(vars(movement_L5_mean,movement_M10_mean,time_L5_mean,time_M10_mean), ~round(sd(.x, na.rm = TRUE),2))
 ```
 
 * None of the parameters of interest were different pre-randomization.*
